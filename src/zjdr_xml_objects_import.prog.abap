@@ -37,7 +37,7 @@ TABLES: tadir.
 *& CONSTANTS
 *&---------------------------------------------------------------------*
 CONSTANTS:
-  cg_xml_version  TYPE string VALUE '1.0',
+  cg_xml_version  TYPE string VALUE '1.1',
   cg_root_node    TYPE string VALUE 'sap_package_export',
   cg_status_ok    TYPE string VALUE 'SUCCESS',
   cg_status_warn  TYPE string VALUE 'WARNING',
@@ -1097,6 +1097,14 @@ FORM f_validate_object_complete
         cs_object-import_message = 'Lectura de objeto en XML incompleta: falta function_group_payload.'.
       ENDIF.
 
+    WHEN 'IDSG' OR 'IDBT' OR 'IDEX' OR 'IDMS' OR 'IDAS'.
+      "IDoc payloads are nested below idoc_definition. They are parsed
+      "separately by the IDoc importer and therefore do not use one payload.
+      cs_object-light          = cg_icon_red.
+      cs_object-action         = 'Omitir'.
+      cs_object-import_status  = cg_status_err.
+      cs_object-import_message = 'La importación de definiciones IDoc requiere la API IDoc del release destino.' .
+
     WHEN OTHERS.
       cs_object-light          = cg_icon_red.
       cs_object-action         = 'Omitir'.
@@ -1416,7 +1424,7 @@ FORM f_import_selected_objects.
         PERFORM f_import_prog CHANGING <fsl_object>.
 
       WHEN 'TTYP'.
-        PERFORM f_mark_not_implemented CHANGING <fsl_object>.
+        PERFORM f_import_ttyp CHANGING <fsl_object>.
 
       WHEN 'CLAS' OR 'INTF'.
         PERFORM f_mark_not_implemented CHANGING <fsl_object>.
@@ -1853,6 +1861,7 @@ FORM f_import_prog
   CHANGING cs_object TYPE ty_import_object.
 
   DATA: tl_report_source TYPE tyt_report_line,
+        tl_include_source TYPE tyt_report_line,
         wal_report_line  TYPE ty_report_line,
         wal_source       TYPE ty_source_line,
         vl_msg           TYPE string,
@@ -1863,6 +1872,29 @@ FORM f_import_prog
 
   CLEAR tl_report_source.
   vl_program = cs_object-object_name.
+
+  SORT tg_source BY object_type object_name include line_number.
+
+  "Persist the includes before checking and inserting the main report. This
+  "makes the XML produced by the exporter self-contained for report sources.
+  LOOP AT tg_source INTO wal_source
+    WHERE object_type EQ cs_object-object_type
+      AND object_name EQ cs_object-object_name
+      AND include     NE vl_program.
+
+    APPEND wal_source-source_line TO tl_include_source.
+
+    AT END OF include.
+      INSERT REPORT wal_source-include FROM tl_include_source.
+      IF sy-subrc NE 0.
+        CONCATENATE 'No se pudo insertar el include' wal_source-include
+          INTO vl_msg SEPARATED BY space.
+        PERFORM f_set_object_error USING vl_msg CHANGING cs_object.
+        RETURN.
+      ENDIF.
+      CLEAR tl_include_source.
+    ENDAT.
+  ENDLOOP.
 
   LOOP AT tg_source INTO wal_source
     WHERE object_type EQ cs_object-object_type
@@ -1922,6 +1954,84 @@ FORM f_import_prog
     CHANGING cs_object.
 
 ENDFORM. " f_import_prog
+
+*&---------------------------------------------------------------------*
+*& FORM f_import_ttyp
+*&---------------------------------------------------------------------*
+* [Título: Importa un tipo de tabla DDIC desde payload XML]
+*&---------------------------------------------------------------------*
+FORM f_import_ttyp
+  CHANGING cs_object TYPE ty_import_object.
+
+  DATA: vl_payload TYPE string,
+        vl_xstring TYPE xstring,
+        vl_error   TYPE abap_bool,
+        vl_message TYPE string,
+        wal_dd40v  TYPE dd40v,
+        tl_dd42v   TYPE STANDARD TABLE OF dd42v,
+        tl_dd43v   TYPE STANDARD TABLE OF dd43v,
+        lo_error   TYPE REF TO cx_root.
+
+  PERFORM f_get_payload USING cs_object 'ddic_payload'
+    CHANGING vl_payload.
+  PERFORM f_decode_payload USING vl_payload
+    CHANGING vl_xstring vl_error vl_message.
+
+  IF vl_error EQ abap_true.
+    PERFORM f_set_object_error USING vl_message CHANGING cs_object.
+    RETURN.
+  ENDIF.
+
+  TRY.
+      CALL TRANSFORMATION id
+        SOURCE XML vl_xstring
+        RESULT dd40v = wal_dd40v
+               dd42v = tl_dd42v
+               dd43v = tl_dd43v.
+
+      CALL FUNCTION 'DDIF_TTYP_PUT'
+        EXPORTING
+          name      = wal_dd40v-typename
+          dd40v_wa  = wal_dd40v
+        TABLES
+          dd42v_tab = tl_dd42v
+          dd43v_tab = tl_dd43v
+        EXCEPTIONS
+          OTHERS    = 1.
+
+      IF sy-subrc NE 0.
+        PERFORM f_set_object_error
+          USING 'Error al crear/actualizar tipo de tabla con DDIF_TTYP_PUT.'
+          CHANGING cs_object.
+        RETURN.
+      ENDIF.
+
+      IF p_activ EQ abap_true.
+        CALL FUNCTION 'DDIF_TTYP_ACTIVATE'
+          EXPORTING name = wal_dd40v-typename
+          EXCEPTIONS OTHERS = 1.
+      ENDIF.
+
+      IF p_activ EQ abap_true AND sy-subrc NE 0.
+        PERFORM f_set_object_warning
+          USING 'Tipo de tabla importado, pero no activado.'
+          CHANGING cs_object.
+      ELSEIF p_activ EQ abap_true.
+        cs_object-activated = abap_true.
+        PERFORM f_set_object_success
+          USING 'Tipo de tabla importado y activado correctamente.'
+          CHANGING cs_object.
+      ELSE.
+        PERFORM f_set_object_warning
+          USING 'Tipo de tabla importado correctamente, pero no activado.'
+          CHANGING cs_object.
+      ENDIF.
+
+    CATCH cx_root INTO lo_error.
+      PERFORM f_set_object_error USING lo_error->get_text( ) CHANGING cs_object.
+  ENDTRY.
+
+ENDFORM. " f_import_ttyp
 
 *&---------------------------------------------------------------------*
 *& FORM f_register_program_package

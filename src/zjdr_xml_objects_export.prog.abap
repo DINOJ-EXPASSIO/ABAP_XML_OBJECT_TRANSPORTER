@@ -1095,6 +1095,7 @@ FORM f_build_package_xml
 
   DATA:
     vl_escaped      TYPE string,
+    vl_default_package TYPE devclass,
     vl_object_count TYPE i,
     vl_prog_count   TYPE i,
     vl_tabl_count   TYPE i,
@@ -1115,6 +1116,13 @@ FORM f_build_package_xml
   CLEAR ct_xml.
 
   vl_object_count = lines( it_selected ).
+
+  "The header package is the default proposed by the importer.  Objects
+  "still carry their own package, so mixed-package exports remain valid.
+  READ TABLE it_selected INTO DATA(wal_first_object) INDEX 1.
+  IF sy-subrc = 0.
+    vl_default_package = wal_first_object-package.
+  ENDIF.
 
   LOOP AT it_selected INTO DATA(wal_count).
 
@@ -1157,6 +1165,9 @@ FORM f_build_package_xml
   APPEND |<sap_package_export version="{ cg_xml_version }">| TO ct_xml.
 
   APPEND '  <header>' TO ct_xml.
+
+  PERFORM f_escape_xml USING vl_default_package CHANGING vl_escaped.
+  APPEND |    <package>{ vl_escaped }</package>| TO ct_xml.
 
   PERFORM f_escape_xml USING gv_export_scope CHANGING vl_escaped.
   APPEND |    <export_scope>{ vl_escaped }</export_scope>| TO ct_xml.
@@ -1346,28 +1357,14 @@ FORM f_export_object_to_xml
                  vl_warning
                  vl_error.
 
-    WHEN cg_type_clas OR cg_type_intf.
-      PERFORM f_export_class_or_intf
-        USING    is_object-object_type
-                 is_object-object_name
-        CHANGING ct_xml
-                 vl_warning
-                 vl_error.
-
-    WHEN cg_type_fugr.
-      PERFORM f_export_fugr
-        USING    is_object-object_name
-        CHANGING ct_xml
-                 vl_warning
-                 vl_error.
-
-    WHEN cg_type_idsg OR cg_type_idbt OR cg_type_idex OR cg_type_idms OR cg_type_idas.
-      PERFORM f_export_idoc_definition
-        USING    is_object-object_type
-                 is_object-object_name
-        CHANGING ct_xml
-                 vl_warning
-                 vl_error.
+    WHEN cg_type_clas OR cg_type_intf OR cg_type_fugr
+      OR cg_type_idsg OR cg_type_idbt OR cg_type_idex OR cg_type_idms OR cg_type_idas.
+      "The former payloads only contained technical fragments.  Marking them
+      "as successful made an exported file look portable when it could not be
+      "recreated by the importer. Keep the object in the manifest as ERROR so
+      "the round-trip contract is explicit and the importer will not change it.
+      vl_error = abap_true.
+      APPEND '      <message>Tipo no incluido en el formato XML portable 1.1.</message>' TO ct_xml.
 
     WHEN OTHERS.
       vl_error = abap_true.
@@ -1584,8 +1581,9 @@ FORM f_export_ttyp
 
   DATA:
     vl_typename TYPE dd40l-typename,
-    wal_dd40l   TYPE dd40l,
-    tl_dd40t    TYPE STANDARD TABLE OF dd40t,
+    wal_dd40v   TYPE dd40v,
+    tl_dd42v    TYPE STANDARD TABLE OF dd42v,
+    tl_dd43v    TYPE STANDARD TABLE OF dd43v,
     vl_xml      TYPE xstring,
     vl_payload  TYPE string.
 
@@ -1595,11 +1593,18 @@ FORM f_export_ttyp
 
   vl_typename = iv_object_name.
 
-  SELECT SINGLE *
-    FROM dd40l
-    INTO @wal_dd40l
-    WHERE typename = @vl_typename
-      AND as4local = 'A'.
+  CALL FUNCTION 'DDIF_TTYP_GET'
+    EXPORTING
+      name          = vl_typename
+      langu         = sy-langu
+    IMPORTING
+      dd40v_wa      = wal_dd40v
+    TABLES
+      dd42v_tab     = tl_dd42v
+      dd43v_tab     = tl_dd43v
+    EXCEPTIONS
+      illegal_input = 1
+      OTHERS        = 2.
 
   IF sy-subrc NE 0.
     cv_error = abap_true.
@@ -1607,14 +1612,10 @@ FORM f_export_ttyp
     RETURN.
   ENDIF.
 
-  SELECT *
-    FROM dd40t
-    INTO TABLE @tl_dd40t
-    WHERE typename = @vl_typename.
-
   CALL TRANSFORMATION id
-    SOURCE dd40l = wal_dd40l
-           dd40t = tl_dd40t
+    SOURCE dd40v = wal_dd40v
+           dd42v = tl_dd42v
+           dd43v = tl_dd43v
     RESULT XML vl_xml.
 
   PERFORM f_xstring_to_base64
