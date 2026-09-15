@@ -1430,7 +1430,7 @@ FORM f_import_selected_objects.
         PERFORM f_mark_not_implemented CHANGING <fsl_object>.
 
       WHEN 'FUGR'.
-        PERFORM f_mark_not_implemented CHANGING <fsl_object>.
+        PERFORM f_import_fugr CHANGING <fsl_object>.
 
       WHEN OTHERS.
         PERFORM f_set_object_error
@@ -2028,10 +2028,226 @@ FORM f_import_ttyp
       ENDIF.
 
     CATCH cx_root INTO lo_error.
-      PERFORM f_set_object_error USING lo_error->get_text( ) CHANGING cs_object.
+      vl_message = lo_error->get_text( ).
+      PERFORM f_set_object_error USING vl_message CHANGING cs_object.
   ENDTRY.
 
 ENDFORM. " f_import_ttyp
+
+*&---------------------------------------------------------------------*
+*& FORM f_import_fugr
+*&---------------------------------------------------------------------*
+* [Título: Recrea un grupo de funciones y sus módulos de función]
+*&---------------------------------------------------------------------*
+FORM f_import_fugr
+  CHANGING cs_object TYPE ty_import_object.
+
+  DATA: vl_payload     TYPE string,
+        vl_xstring     TYPE xstring,
+        vl_error       TYPE abap_bool,
+        vl_message     TYPE string,
+        vl_include     TYPE progname,
+        vl_short_text  TYPE string,
+        tl_tfdir       TYPE STANDARD TABLE OF tfdir,
+        tl_tftit       TYPE STANDARD TABLE OF tftit,
+        tl_enlfdir     TYPE STANDARD TABLE OF enlfdir,
+        tl_fupararef   TYPE STANDARD TABLE OF fupararef,
+        tl_import      TYPE STANDARD TABLE OF rsimp,
+        tl_export      TYPE STANDARD TABLE OF rsexp,
+        tl_changing    TYPE STANDARD TABLE OF rscha,
+        tl_tables      TYPE STANDARD TABLE OF rstbl,
+        tl_exceptions  TYPE STANDARD TABLE OF rsexc,
+        tl_source      TYPE STANDARD TABLE OF rssource,
+        tl_report_source TYPE tyt_report_line,
+        vl_prefix      TYPE progname,
+        lo_error       TYPE REF TO cx_root.
+
+  PERFORM f_get_payload USING cs_object 'function_group_payload'
+    CHANGING vl_payload.
+  PERFORM f_decode_payload USING vl_payload
+    CHANGING vl_xstring vl_error vl_message.
+  IF vl_error EQ abap_true.
+    PERFORM f_set_object_error USING vl_message CHANGING cs_object.
+    RETURN.
+  ENDIF.
+
+  TRY.
+      CALL TRANSFORMATION id
+        SOURCE XML vl_xstring
+        RESULT tfdir     = tl_tfdir
+               tftit     = tl_tftit
+               enlfdir   = tl_enlfdir
+               fupararef = tl_fupararef.
+
+      "Create the function pool before inserting its function modules. The
+      "standard API owns TFDIR/ENLFDIR and the generated Uxx includes.
+      IF cs_object-exists_dest IS INITIAL.
+        vl_short_text = cs_object-short_text.
+        IF vl_short_text IS INITIAL.
+          vl_short_text = |Grupo de funciones { cs_object-object_name }|.
+        ENDIF.
+
+        CALL FUNCTION 'FUNCTION_POOL_CREATE'
+          EXPORTING
+            pool_name = cs_object-object_name
+            short_text = vl_short_text
+          EXCEPTIONS
+            OTHERS = 1.
+        IF sy-subrc NE 0.
+          PERFORM f_set_object_error
+            USING 'No se pudo crear el grupo de funciones.'
+            CHANGING cs_object.
+          RETURN.
+        ENDIF.
+      ENDIF.
+
+      "FUNCTION_POOL_CREATE creates the pool; register a new pool in the
+      "requested package/transport before its function modules are inserted.
+      IF cs_object-exists_dest IS INITIAL.
+        CALL FUNCTION 'TR_TADIR_INTERFACE'
+          EXPORTING
+            wi_test_modus      = abap_false
+            wi_tadir_pgmid     = 'R3TR'
+            wi_tadir_object    = 'FUGR'
+            wi_tadir_obj_name  = cs_object-object_name
+            wi_tadir_srcsystem = sy-sysid
+            wi_tadir_author    = sy-uname
+            wi_tadir_devclass  = vg_package
+            wi_set_genflag     = abap_false
+          EXCEPTIONS
+            OTHERS             = 1.
+        IF sy-subrc NE 0.
+          PERFORM f_set_object_error
+            USING 'No se pudo asignar el grupo de funciones al package destino.'
+            CHANGING cs_object.
+          RETURN.
+        ENDIF.
+      ENDIF.
+
+      LOOP AT tl_tfdir INTO DATA(wal_tfdir).
+        CLEAR: tl_import, tl_export, tl_changing, tl_tables,
+               tl_exceptions, tl_source.
+
+        LOOP AT tl_fupararef INTO DATA(wal_parameter)
+          WHERE funcname = wal_tfdir-funcname.
+          CASE wal_parameter-paramtype.
+            WHEN 'I'.
+              APPEND CORRESPONDING #( wal_parameter ) TO tl_import.
+            WHEN 'E'.
+              APPEND CORRESPONDING #( wal_parameter ) TO tl_export.
+            WHEN 'C'.
+              APPEND CORRESPONDING #( wal_parameter ) TO tl_changing.
+            WHEN 'T'.
+              APPEND CORRESPONDING #( wal_parameter ) TO tl_tables.
+            WHEN 'X'.
+              APPEND CORRESPONDING #( wal_parameter ) TO tl_exceptions.
+          ENDCASE.
+        ENDLOOP.
+
+        "TFDIR-INCLUDE contains the Uxx suffix; it is the source include
+        "captured by the exporter for this function module.
+        CONCATENATE 'L' cs_object-object_name wal_tfdir-include INTO vl_include.
+        LOOP AT tg_source INTO DATA(wal_source)
+          WHERE object_type = cs_object-object_type
+            AND object_name = cs_object-object_name
+            AND include     = vl_include.
+          IF wal_source-source_line CP 'FUNCTION *'
+          OR wal_source-source_line CP 'ENDFUNCTION*'
+          OR wal_source-source_line CP '*"*'.
+            CONTINUE.
+          ENDIF.
+          APPEND VALUE #( line = wal_source-source_line ) TO tl_source.
+        ENDLOOP.
+
+        READ TABLE tl_tftit INTO DATA(wal_tftit)
+          WITH KEY funcname = wal_tfdir-funcname spras = sy-langu.
+        IF sy-subrc NE 0.
+          READ TABLE tl_tftit INTO wal_tftit WITH KEY funcname = wal_tfdir-funcname.
+        ENDIF.
+
+        CALL FUNCTION 'RS_FUNCTIONMODULE_INSERT'
+          EXPORTING
+            funcname            = wal_tfdir-funcname
+            function_pool       = cs_object-object_name
+            short_text          = wal_tftit-stext
+            remote_call         = wal_tfdir-fmode
+            update_task         = wal_tfdir-utask
+            corrnum             = p_req
+            suppress_corr_check = abap_true
+            save_active         = abap_true
+          TABLES
+            import_parameter    = tl_import
+            export_parameter    = tl_export
+            changing_parameter  = tl_changing
+            tables_parameter    = tl_tables
+            exception_list      = tl_exceptions
+            source              = tl_source
+          EXCEPTIONS
+            OTHERS              = 1.
+        IF sy-subrc NE 0.
+          CONCATENATE 'No se pudo crear el módulo de función' wal_tfdir-funcname
+            INTO vl_message SEPARATED BY space.
+          PERFORM f_set_object_error USING vl_message CHANGING cs_object.
+          RETURN.
+        ENDIF.
+      ENDLOOP.
+
+      "The Function Builder generates SAPL... and LUxx includes itself. The
+      "remaining L... includes carry global data, FORM routines and PBO/PAI
+      "modules, so restore them after all function modules exist.
+      SORT tg_source BY object_type object_name include line_number.
+      CONCATENATE 'L' cs_object-object_name INTO vl_prefix.
+      LOOP AT tg_source INTO DATA(wal_aux_source)
+        WHERE object_type = cs_object-object_type
+          AND object_name = cs_object-object_name.
+
+        IF wal_aux_source-include NP |{ vl_prefix }*|
+        OR wal_aux_source-include CP |{ vl_prefix }U*|.
+          CONTINUE.
+        ENDIF.
+
+        APPEND wal_aux_source-source_line TO tl_report_source.
+        AT END OF include.
+          INSERT REPORT wal_aux_source-include FROM tl_report_source.
+          IF sy-subrc NE 0.
+            CONCATENATE 'No se pudo restaurar el include' wal_aux_source-include
+              INTO vl_message SEPARATED BY space.
+            PERFORM f_set_object_error USING vl_message CHANGING cs_object.
+            RETURN.
+          ENDIF.
+          CLEAR tl_report_source.
+        ENDAT.
+      ENDLOOP.
+
+      IF p_activ EQ abap_true.
+        DATA tl_activation TYPE STANDARD TABLE OF dwinactiv.
+        APPEND VALUE #( object = 'FUGR' obj_name = cs_object-object_name ) TO tl_activation.
+        CALL FUNCTION 'RS_WORKING_OBJECTS_ACTIVATE'
+          TABLES objects = tl_activation
+          EXCEPTIONS OTHERS = 1.
+      ENDIF.
+
+      IF p_activ EQ abap_true AND sy-subrc NE 0.
+        PERFORM f_set_object_warning
+          USING 'Grupo y módulos importados, pero no activados.'
+          CHANGING cs_object.
+      ELSEIF p_activ EQ abap_true.
+        cs_object-activated = abap_true.
+        PERFORM f_set_object_success
+          USING 'Grupo de funciones y módulos importados correctamente.'
+          CHANGING cs_object.
+      ELSE.
+        PERFORM f_set_object_warning
+          USING 'Grupo y módulos importados correctamente, pero no activados.'
+          CHANGING cs_object.
+      ENDIF.
+
+    CATCH cx_root INTO lo_error.
+      vl_message = lo_error->get_text( ).
+      PERFORM f_set_object_error USING vl_message CHANGING cs_object.
+  ENDTRY.
+
+ENDFORM. " f_import_fugr
 
 *&---------------------------------------------------------------------*
 *& FORM f_register_program_package

@@ -1357,7 +1357,14 @@ FORM f_export_object_to_xml
                  vl_warning
                  vl_error.
 
-    WHEN cg_type_clas OR cg_type_intf OR cg_type_fugr
+    WHEN cg_type_fugr.
+      PERFORM f_export_fugr
+        USING    is_object-object_name
+        CHANGING ct_xml
+                 vl_warning
+                 vl_error.
+
+    WHEN cg_type_clas OR cg_type_intf
       OR cg_type_idsg OR cg_type_idbt OR cg_type_idex OR cg_type_idms OR cg_type_idas.
       "The former payloads only contained technical fragments.  Marking them
       "as successful made an exported file look portable when it could not be
