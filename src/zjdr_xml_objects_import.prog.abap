@@ -1627,6 +1627,8 @@ FORM f_import_selected_objects.
 
   ENDLOOP.
 
+  PERFORM f_validate_selected_dependencies.
+
   vl_count_txt = vl_count.
 
   CONCATENATE '¿Importar' vl_count_txt 'objetos seleccionados?'
@@ -1735,6 +1737,27 @@ FORM f_import_selected_objects.
   ENDIF.
 
 ENDFORM. " f_import_selected_objects
+
+* A root must not be imported while an explicitly exported dependency of that
+* root was left out of the current ALV selection.
+FORM f_validate_selected_dependencies.
+  FIELD-SYMBOLS: <root> TYPE ty_import_object,
+                 <dependency> TYPE ty_import_object.
+  LOOP AT tg_objects ASSIGNING <root>
+    WHERE selected = abap_true AND relationship = 'ROOT'.
+    LOOP AT tg_objects ASSIGNING <dependency>
+      WHERE relationship = 'DEPENDENCY'
+        AND parent_type = <root>-object_type
+        AND parent_name = <root>-object_name.
+      IF <dependency>-selected IS INITIAL.
+        <root>-selected = abap_false.
+        PERFORM f_set_object_error
+          USING |Falta seleccionar dependencia { <dependency>-object_type } { <dependency>-object_name }.|
+          CHANGING <root>.
+      ENDIF.
+    ENDLOOP.
+  ENDLOOP.
+ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& FORM f_navigate_to_object
