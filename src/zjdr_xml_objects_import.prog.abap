@@ -830,7 +830,10 @@ FORM f_collect_dependencies
           wal_dependency-included = vl_value.
           PERFORM f_get_attribute_value USING lo_dependency 'source'
             CHANGING wal_dependency-source_type.
-          APPEND wal_dependency TO tg_dependencies.
+          IF wal_dependency-object_type <> wal_dependency-parent_type
+            OR wal_dependency-object_name <> wal_dependency-parent_name.
+            APPEND wal_dependency TO tg_dependencies.
+          ENDIF.
         ENDIF.
         lo_dependency = lo_dependency->get_next( ).
       ENDWHILE.

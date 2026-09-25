@@ -371,6 +371,7 @@ START-OF-SELECTION.
   PERFORM f_select_objects.
   PERFORM f_select_idoc_definitions.
   PERFORM f_filter_customer_objects.
+  PERFORM f_fold_program_includes.
   PERFORM f_expand_program_dependencies.
 
 
@@ -2474,6 +2475,82 @@ FORM f_detect_includes
 
 ENDFORM. " f_detect_includes
 
+* Internal includes travel inside their owning PROG and must not become
+* independent repository objects or graph dependencies.
+FORM f_collect_owned_includes
+  USING iv_program TYPE progname
+  CHANGING ct_includes TYPE tyt_progname.
+  DATA: tl_source TYPE ty_t_source,
+        tl_nested_source TYPE ty_t_source,
+        tl_pending TYPE tyt_include,
+        tl_nested TYPE tyt_include,
+        vl_parent_object TYPE tadir-obj_name,
+        vl_index TYPE i.
+  CLEAR ct_includes.
+  vl_parent_object = iv_program.
+  READ REPORT iv_program INTO tl_source.
+  IF sy-subrc <> 0.
+    RETURN.
+  ENDIF.
+  PERFORM f_detect_includes
+    USING vl_parent_object tl_source CHANGING tl_pending.
+  vl_index = 1.
+  WHILE vl_index <= lines( tl_pending ).
+    READ TABLE tl_pending INTO DATA(wal_pending) INDEX vl_index.
+    READ TABLE ct_includes TRANSPORTING NO FIELDS
+      WITH KEY table_line = wal_pending-include_name.
+    IF sy-subrc <> 0 AND wal_pending-include_name <> iv_program.
+      APPEND wal_pending-include_name TO ct_includes.
+    ENDIF.
+    CLEAR: tl_nested_source, tl_nested.
+    READ REPORT wal_pending-include_name INTO tl_nested_source.
+    IF sy-subrc = 0.
+      PERFORM f_detect_includes
+        USING vl_parent_object tl_nested_source CHANGING tl_nested.
+      LOOP AT tl_nested INTO DATA(wal_nested).
+        READ TABLE tl_pending TRANSPORTING NO FIELDS
+          WITH KEY include_name = wal_nested-include_name.
+        IF sy-subrc <> 0 AND wal_nested-include_name <> iv_program.
+          APPEND wal_nested TO tl_pending.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+    vl_index = vl_index + 1.
+  ENDWHILE.
+  SORT ct_includes.
+  DELETE ADJACENT DUPLICATES FROM ct_includes.
+ENDFORM.
+
+FORM f_fold_program_includes.
+  DATA: tl_owned TYPE tyt_progname,
+        tl_program_owned TYPE tyt_progname,
+        vl_program TYPE progname,
+        vl_subc TYPE trdir-subc.
+  LOOP AT tg_alv_object INTO DATA(wal_program)
+    WHERE object_type = cg_type_prog AND relationship = 'ROOT'.
+    vl_program = wal_program-object_name.
+    CLEAR vl_subc.
+    SELECT SINGLE subc FROM trdir INTO vl_subc WHERE name = vl_program.
+    IF sy-subrc <> 0 OR vl_subc = 'I'.
+      CONTINUE.
+    ENDIF.
+    CLEAR tl_program_owned.
+    PERFORM f_collect_owned_includes
+      USING vl_program CHANGING tl_program_owned.
+    APPEND LINES OF tl_program_owned TO tl_owned.
+  ENDLOOP.
+  SORT tl_owned.
+  DELETE ADJACENT DUPLICATES FROM tl_owned.
+  LOOP AT tg_alv_object INTO DATA(wal_candidate)
+    WHERE object_type = cg_type_prog.
+    READ TABLE tl_owned TRANSPORTING NO FIELDS
+      WITH KEY table_line = wal_candidate-object_name.
+    IF sy-subrc = 0.
+      DELETE tg_alv_object.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
 FORM f_get_object_text
   USING    iv_object_type TYPE string
            iv_object_name TYPE tadir-obj_name
@@ -2915,6 +2992,7 @@ FORM f_expand_program_dependencies.
   DATA: vl_index TYPE i VALUE 1,
         wal_parent TYPE ty_alv_object,
         tl_names TYPE tyt_string,
+        tl_owned_includes TYPE tyt_progname,
         tl_object_names TYPE STANDARD TABLE OF tadir-obj_name WITH DEFAULT KEY,
         tl_function_names TYPE STANDARD TABLE OF tfdir-funcname WITH DEFAULT KEY,
         tl_tadir TYPE tyt_tadir,
@@ -2942,10 +3020,10 @@ FORM f_expand_program_dependencies.
       ENDCASE.
     ENDIF.
     IF vl_scan_program IS NOT INITIAL.
-      CLEAR: tl_names, tl_object_names, tl_function_names, tl_tadir,
+      CLEAR: tl_names, tl_owned_includes, tl_object_names, tl_function_names, tl_tadir,
              tl_function_pools, tl_groups, tl_group_tadir.
       PERFORM f_collect_prog_dep_names
-        USING vl_scan_program CHANGING tl_names.
+        USING vl_scan_program CHANGING tl_names tl_owned_includes.
       IF tl_names IS NOT INITIAL.
         LOOP AT tl_names INTO DATA(vl_dependency_name).
           APPEND vl_dependency_name TO tl_object_names.
@@ -2980,6 +3058,17 @@ FORM f_expand_program_dependencies.
       ENDIF.
       LOOP AT tl_tadir INTO DATA(wal_tadir).
         vl_object_type = wal_tadir-object.
+        IF wal_tadir-object = wal_parent-object_type
+          AND wal_tadir-obj_name = wal_parent-object_name.
+          CONTINUE.
+        ENDIF.
+        IF wal_tadir-object = cg_type_prog.
+          READ TABLE tl_owned_includes TRANSPORTING NO FIELDS
+            WITH KEY table_line = wal_tadir-obj_name.
+          IF sy-subrc = 0.
+            CONTINUE.
+          ENDIF.
+        ENDIF.
         READ TABLE tg_dependencies TRANSPORTING NO FIELDS
           WITH KEY parent_type = wal_parent-object_type
                    parent_name = wal_parent-object_name
@@ -3062,22 +3151,23 @@ ENDFORM.
 
 FORM f_collect_prog_dep_names
   USING iv_program TYPE progname
-  CHANGING ct_names TYPE tyt_string.
+  CHANGING ct_names TYPE tyt_string
+           ct_owned_includes TYPE tyt_progname.
   DATA: tl_source TYPE ty_t_source,
         tl_include_source TYPE ty_t_source,
-        tl_includes TYPE tyt_include,
         tl_matches TYPE match_result_tab,
         vl_upper TYPE string,
         vl_token TYPE string.
-  CLEAR ct_names.
+  CLEAR: ct_names, ct_owned_includes.
   READ REPORT iv_program INTO tl_source.
   IF sy-subrc <> 0.
     RETURN.
   ENDIF.
-  PERFORM f_detect_includes USING iv_program tl_source CHANGING tl_includes.
-  LOOP AT tl_includes INTO DATA(wal_include).
+  PERFORM f_collect_owned_includes
+    USING iv_program CHANGING ct_owned_includes.
+  LOOP AT ct_owned_includes INTO DATA(vl_include).
     CLEAR tl_include_source.
-    READ REPORT wal_include-include_name INTO tl_include_source.
+    READ REPORT vl_include INTO tl_include_source.
     IF sy-subrc = 0.
       APPEND LINES OF tl_include_source TO tl_source.
     ENDIF.
