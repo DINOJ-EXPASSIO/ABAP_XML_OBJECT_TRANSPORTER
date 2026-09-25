@@ -2446,7 +2446,7 @@ FORM f_detect_includes
     ENDIF.
 
     CLEAR vl_include_name.
-    FIND REGEX '^INCLUDE[ ]+([A-Z0-9_/]+)[ ]*(IF[ ]+FOUND[ ]*)?\.'
+    FIND PCRE '^INCLUDE[ ]+([A-Z0-9_/]+)[ ]*(IF[ ]+FOUND[ ]*)?\.'
       IN vl_upper SUBMATCHES vl_include_name.
     IF sy-subrc = 0 AND vl_include_name <> 'STRUCTURE'
     AND vl_include_name <> 'TYPE'.
@@ -3064,6 +3064,7 @@ FORM f_collect_prog_dep_names
   USING iv_program TYPE progname
   CHANGING ct_names TYPE tyt_string.
   DATA: tl_source TYPE ty_t_source,
+        tl_include_source TYPE ty_t_source,
         tl_includes TYPE tyt_include,
         tl_matches TYPE match_result_tab,
         vl_upper TYPE string,
@@ -3075,7 +3076,8 @@ FORM f_collect_prog_dep_names
   ENDIF.
   PERFORM f_detect_includes USING iv_program tl_source CHANGING tl_includes.
   LOOP AT tl_includes INTO DATA(wal_include).
-    READ REPORT wal_include-include_name INTO DATA(tl_include_source).
+    CLEAR tl_include_source.
+    READ REPORT wal_include-include_name INTO tl_include_source.
     IF sy-subrc = 0.
       APPEND LINES OF tl_include_source TO tl_source.
     ENDIF.
@@ -3083,7 +3085,7 @@ FORM f_collect_prog_dep_names
   LOOP AT tl_source INTO DATA(vl_line).
     vl_upper = to_upper( vl_line ).
     CLEAR tl_matches.
-    FIND ALL OCCURRENCES OF REGEX '[A-Z][A-Z0-9_/]{2,}' IN vl_upper RESULTS tl_matches.
+    FIND ALL OCCURRENCES OF PCRE '[A-Z][A-Z0-9_/]{2,}' IN vl_upper RESULTS tl_matches.
     LOOP AT tl_matches INTO DATA(wal_match).
       vl_token = substring( val = vl_upper off = wal_match-offset len = wal_match-length ).
       IF vl_token <> iv_program.
@@ -3138,7 +3140,7 @@ FORM f_export_prog_bundle
   wal_bundle-format = 'PROGRAM_COMPONENTS_1'.
   wal_bundle-program = iv_name.
   SELECT SINGLE subc FROM trdir INTO wal_bundle-program_type WHERE name = iv_name.
-  INSERT CONV progname( iv_name ) INTO TABLE tl_programs.
+  INSERT iv_name INTO TABLE tl_programs.
   LOOP AT it_includes INTO DATA(wal_include).
     PERFORM f_is_customer_object USING 'PROG' wal_include-include_name space
       CHANGING vl_customer.
