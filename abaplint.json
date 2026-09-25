@@ -1,0 +1,11 @@
+{
+  "global": {
+    "files": "/src/**/*.*"
+  },
+  "syntax": {
+    "version": "v758"
+  },
+  "rules": {
+    "parser_error": true
+  }
+}
