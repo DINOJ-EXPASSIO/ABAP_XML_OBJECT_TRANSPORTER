@@ -2090,6 +2090,10 @@ FORM f_import_tabl
         RETURN.
       ENDIF.
 
+      IF cs_object-target_object_name IS NOT INITIAL.
+        wal_dd02v-tabname = cs_object-target_object_name.
+      ENDIF.
+
       CALL FUNCTION 'DDIF_TABL_PUT'
         EXPORTING
           name      = wal_dd02v-tabname
@@ -2163,6 +2167,10 @@ FORM f_import_shlp
           USING 'El nombre del payload debe coincidir con el objeto del XML.'
           CHANGING cs_object.
         RETURN.
+      ENDIF.
+
+      IF cs_object-target_object_name IS NOT INITIAL.
+        wal_dd30v-shlpname = cs_object-target_object_name.
       ENDIF.
 
       CALL FUNCTION 'DDIF_SHLP_PUT'
@@ -2304,6 +2312,10 @@ FORM f_import_ttyp
           USING 'El nombre del payload debe coincidir con el objeto del XML.'
           CHANGING cs_object.
         RETURN.
+      ENDIF.
+
+      IF cs_object-target_object_name IS NOT INITIAL.
+        wal_dd40v-typename = cs_object-target_object_name.
       ENDIF.
 
       CALL FUNCTION 'DDIF_TTYP_PUT'
