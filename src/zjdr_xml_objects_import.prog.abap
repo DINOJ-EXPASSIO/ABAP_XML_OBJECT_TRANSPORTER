@@ -1400,7 +1400,10 @@ FORM f_check_object_exists
   CLEAR cs_object-exists_dest.
 
   vl_pgmid    = 'R3TR'.
-  vl_obj_name = cs_object-object_name.
+  vl_obj_name = cs_object-target_object_name.
+  IF vl_obj_name IS INITIAL.
+    vl_obj_name = cs_object-object_name.
+  ENDIF.
 
   CASE cs_object-object_type.
     WHEN 'DOMA'.
@@ -1527,6 +1530,7 @@ FORM f_build_fieldcat
   PERFORM f_add_fieldcat USING 'LIGHT'          'Estado'         1 6  abap_true  abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'OBJECT_TYPE'    'Tipo'           2 10 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'OBJECT_NAME'    'Objeto'         3 40 abap_false abap_true  CHANGING ct_fieldcat.
+  PERFORM f_add_fieldcat USING 'TARGET_OBJECT_NAME' 'Nombre destino' 4 40 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'RELATIONSHIP'   'Relacion'       4 12 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'PARENT_NAME'    'Objeto padre'   5 40 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'SHORT_TEXT'     'Descripción'    4 50 abap_false abap_false CHANGING ct_fieldcat.
@@ -1573,6 +1577,9 @@ FORM f_add_fieldcat
   wal_fieldcat-outputlen = iv_outputlen.
   wal_fieldcat-icon      = iv_icon.
   wal_fieldcat-hotspot   = iv_hotspot.
+  IF iv_fieldname = 'TARGET_OBJECT_NAME'.
+    wal_fieldcat-edit = abap_true.
+  ENDIF.
 
   APPEND wal_fieldcat TO ct_fieldcat.
 
@@ -1595,6 +1602,10 @@ FORM f_import_selected_objects.
     vl_imported  TYPE i.
 
   FIELD-SYMBOLS <fsl_object> TYPE ty_import_object.
+
+  IF go_grid IS BOUND.
+    go_grid->check_changed_data( ).
+  ENDIF.
 
   IF p_test EQ abap_true.
     MESSAGE 'Modo simulación activo. No se modificaron objetos.' TYPE 'S' DISPLAY LIKE 'W'.
@@ -1929,6 +1940,10 @@ FORM f_import_doma
         RETURN.
       ENDIF.
 
+      IF cs_object-target_object_name IS NOT INITIAL.
+        wal_dd01v-domname = cs_object-target_object_name.
+      ENDIF.
+
       CALL FUNCTION 'DDIF_DOMA_PUT'
         EXPORTING
           name      = wal_dd01v-domname
@@ -1992,6 +2007,10 @@ FORM f_import_dtel
           USING 'El nombre del payload debe coincidir con el objeto del XML.'
           CHANGING cs_object.
         RETURN.
+      ENDIF.
+
+      IF cs_object-target_object_name IS NOT INITIAL.
+        wal_dd04v-rollname = cs_object-target_object_name.
       ENDIF.
 
       CALL FUNCTION 'DDIF_DTEL_PUT'
