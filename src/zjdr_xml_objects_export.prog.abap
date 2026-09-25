@@ -2543,6 +2543,12 @@ FORM f_fold_program_includes.
   DELETE ADJACENT DUPLICATES FROM tl_owned.
   LOOP AT tg_alv_object INTO DATA(wal_candidate)
     WHERE object_type = cg_type_prog.
+    vl_program = wal_candidate-object_name.
+    CLEAR vl_subc.
+    SELECT SINGLE subc FROM trdir INTO vl_subc WHERE name = vl_program.
+    IF sy-subrc <> 0 OR vl_subc <> 'I'.
+      CONTINUE.
+    ENDIF.
     READ TABLE tl_owned TRANSPORTING NO FIELDS
       WITH KEY table_line = wal_candidate-object_name.
     IF sy-subrc = 0.
