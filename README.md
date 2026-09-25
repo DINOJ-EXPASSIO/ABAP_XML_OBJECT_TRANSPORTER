@@ -49,6 +49,9 @@ interfaces y grupos de funciones. Las muestra como dependencias seleccionables
 y conserva todas las relaciones padre-hijo en el XML. `MSAG` y `ENQU` se
 identifican como prerequisitos externos: no se crean. El importador comprueba
 los prerequisitos elegidos, detecta ciclos y ordena primero las dependencias.
+Una dependencia DDIC estructural faltante impide crear el objeto dependiente.
+Las dependencias de código faltantes permiten guardar `PROG`, `CLAS`, `INTF` o
+`FUGR` inactivos, dejan una advertencia y excluyen su activación automática.
 
 La columna **Nombre destino** permite preparar un mapeo por objeto en el
 exportador y modificarlo antes de importar. El nombre de origen permanece

@@ -21,7 +21,10 @@ Un tipo se considera soportado solo cuando el exportador lo serializa, el import
   referencias estáticas a objetos propios presentes en TADIR.
 - Cada relación se conserva aunque un mismo objeto dependa de varios padres.
 - Las dependencias pueden excluirse del archivo o de la importación si ya
-  existen en destino; si no existen, el padre queda bloqueado antes de escribir.
+  existen en destino; si no existen, se aplica la política según el tipo padre.
+- Una dependencia estructural DDIC faltante bloquea la creación. Para `PROG`,
+  `CLAS`, `INTF` y `FUGR`, el importador intenta guardar el objeto inactivo,
+  informa `WARNING` y omite su activación automática.
 - El mapeo origen-destino está soportado para los tipos importables de la tabla.
   Las referencias DDIC conocidas se cambian en sus estructuras y las referencias
   ABAP se cambian solo como identificadores fuera de comentarios y literales.

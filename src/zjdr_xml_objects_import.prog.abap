@@ -107,6 +107,8 @@ TYPES: BEGIN OF ty_import_object,
          import_priority TYPE i,
          activated       TYPE abap_bool,
          activation_pending TYPE abap_bool,
+         activation_blocked TYPE abap_bool,
+         dependency_message TYPE string,
          oo_prepared TYPE abap_bool,
        END OF ty_import_object.
 
@@ -1273,9 +1275,14 @@ FORM f_prepare_import_plan.
       <fsl_object>-action = 'Crear'.
     ENDIF.
 
-    <fsl_object>-light          = cg_icon_gray.
+    IF <fsl_object>-activation_blocked = abap_true.
+      <fsl_object>-light = cg_icon_yellow.
+      <fsl_object>-import_message = <fsl_object>-dependency_message.
+    ELSE.
+      <fsl_object>-light = cg_icon_gray.
+      <fsl_object>-import_message = 'Objeto listo para importar. Seleccione la fila y presione Importar.'.
+    ENDIF.
     <fsl_object>-import_status  = cg_status_ready.
-    <fsl_object>-import_message = 'Objeto listo para importar. Seleccione la fila y presione Importar.'.
 
   ENDLOOP.
 
@@ -1319,7 +1326,8 @@ FORM f_validate_dependency_graph.
         vl_changed TYPE abap_bool,
         vl_repo_type TYPE tadir-object,
         vl_existing TYPE tadir-obj_name,
-        vl_message TYPE string.
+        vl_message TYPE string,
+        vl_structural TYPE abap_bool.
   FIELD-SYMBOLS <parent> TYPE ty_import_object.
   tl_closure = tg_dependencies.
   LOOP AT tg_dependencies INTO DATA(wal_dependency).
@@ -1345,7 +1353,14 @@ FORM f_validate_dependency_graph.
         AND obj_name = wal_dependency-object_name.
     IF sy-subrc <> 0.
       vl_message = |Dependencia faltante: { wal_dependency-object_type } { wal_dependency-object_name }.|.
-      PERFORM f_set_object_error USING vl_message CHANGING <parent>.
+      PERFORM f_dependency_is_structural
+        USING <parent>-object_type CHANGING vl_structural.
+      IF vl_structural = abap_true.
+        PERFORM f_set_object_error USING vl_message CHANGING <parent>.
+      ELSE.
+        <parent>-activation_blocked = abap_true.
+        <parent>-dependency_message = |{ vl_message } Se guardara inactivo.|.
+      ENDIF.
     ENDIF.
   ENDLOOP.
   DO.
@@ -1381,9 +1396,27 @@ FORM f_validate_dependency_graph.
     READ TABLE tg_objects ASSIGNING <parent>
       WITH KEY object_type = wal_cycle-parent_type object_name = wal_cycle-parent_name.
     IF sy-subrc = 0.
-      PERFORM f_set_object_error USING 'Ciclo de dependencias detectado.' CHANGING <parent>.
+      PERFORM f_dependency_is_structural
+        USING <parent>-object_type CHANGING vl_structural.
+      IF vl_structural = abap_true.
+        PERFORM f_set_object_error USING 'Ciclo de dependencias detectado.' CHANGING <parent>.
+      ELSE.
+        <parent>-activation_blocked = abap_true.
+        <parent>-dependency_message = 'Ciclo de dependencias detectado; se guardara inactivo.'.
+      ENDIF.
     ENDIF.
   ENDLOOP.
+ENDFORM.
+
+FORM f_dependency_is_structural
+  USING iv_parent_type TYPE string
+  CHANGING cv_structural TYPE abap_bool.
+  cv_structural = abap_false.
+  IF iv_parent_type = 'DOMA' OR iv_parent_type = 'DTEL'
+    OR iv_parent_type = 'TABL' OR iv_parent_type = 'STRU'
+    OR iv_parent_type = 'TTYP' OR iv_parent_type = 'SHLP'.
+    cv_structural = abap_true.
+  ENDIF.
 ENDFORM.
 
 FORM f_validate_name_mappings.
@@ -1914,6 +1947,13 @@ FORM f_import_selected_objects.
           CHANGING <fsl_object>.
     ENDCASE.
 
+    IF <fsl_object>-activation_blocked = abap_true
+      AND <fsl_object>-import_status <> cg_status_err.
+      CLEAR <fsl_object>-activation_pending.
+      PERFORM f_set_object_warning
+        USING <fsl_object>-dependency_message CHANGING <fsl_object>.
+    ENDIF.
+
     vl_imported = vl_imported + 1.
 
     PERFORM f_add_log
@@ -1949,7 +1989,8 @@ FORM f_validate_selected_deps.
   DATA: vl_repo_type TYPE tadir-object,
         vl_dependency_name TYPE tadir-obj_name,
         vl_existing TYPE tadir-obj_name,
-        vl_message TYPE string.
+        vl_message TYPE string,
+        vl_structural TYPE abap_bool.
   LOOP AT tg_dependencies INTO DATA(wal_dependency).
     READ TABLE tg_objects ASSIGNING <root>
       WITH KEY object_type = wal_dependency-parent_type
@@ -1971,9 +2012,18 @@ FORM f_validate_selected_deps.
         WHERE pgmid = 'R3TR' AND object = vl_repo_type
           AND obj_name = vl_dependency_name.
       IF sy-subrc <> 0.
-        <root>-selected = abap_false.
         vl_message = |Dependencia no seleccionada ni existente: { wal_dependency-object_type } { vl_dependency_name }.|.
-        PERFORM f_set_object_error USING vl_message CHANGING <root>.
+        PERFORM f_dependency_is_structural
+          USING <root>-object_type CHANGING vl_structural.
+        IF vl_structural = abap_true.
+          <root>-selected = abap_false.
+          PERFORM f_set_object_error USING vl_message CHANGING <root>.
+        ELSE.
+          <root>-activation_blocked = abap_true.
+          <root>-dependency_message = |{ vl_message } Se guardara inactivo.|.
+          <root>-light = cg_icon_yellow.
+          <root>-import_message = <root>-dependency_message.
+        ENDIF.
       ENDIF.
     ENDIF.
   ENDLOOP.
