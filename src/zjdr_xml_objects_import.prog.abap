@@ -37,7 +37,7 @@ TABLES: tadir.
 *& CONSTANTS
 *&---------------------------------------------------------------------*
 CONSTANTS:
-  cg_xml_version  TYPE string VALUE '1.2',
+  cg_xml_version  TYPE string VALUE '1.3',
   cg_root_node    TYPE string VALUE 'sap_package_export',
   cg_status_ok    TYPE string VALUE 'SUCCESS',
   cg_status_warn  TYPE string VALUE 'WARNING',
@@ -88,6 +88,13 @@ TYPES: BEGIN OF ty_import_object,
          light           TYPE icon_d,
          object_type     TYPE string,
          object_name     TYPE tadir-obj_name,
+         source_object_type TYPE string,
+         source_object_name TYPE tadir-obj_name,
+         target_object_name TYPE tadir-obj_name,
+         relationship    TYPE string,
+         parent_type     TYPE string,
+         parent_name     TYPE tadir-obj_name,
+         relation_reason TYPE string,
          short_text      TYPE string,
          original_lang   TYPE sylangu,
          original_system TYPE tadir-srcsystem,
@@ -584,7 +591,7 @@ FORM f_parse_xml.
     USING lo_root_node 'version'
     CHANGING vl_version.
 
-  IF vl_version NE cg_xml_version AND vl_version NE '1.1'.
+  IF vl_version NE cg_xml_version AND vl_version NE '1.2' AND vl_version NE '1.1'.
     MESSAGE 'Versión XML no soportada.' TYPE 'E'.
   ENDIF.
   vg_input_version = vl_version.
@@ -730,6 +737,27 @@ FORM f_parse_object
 
   PERFORM f_get_child_value USING io_object_node 'short_text'
     CHANGING wal_object-short_text.
+
+  PERFORM f_get_child_value USING io_object_node 'source_object_type'
+    CHANGING wal_object-source_object_type.
+  PERFORM f_get_child_value USING io_object_node 'source_object_name'
+    CHANGING wal_object-source_object_name.
+  PERFORM f_get_child_value USING io_object_node 'relationship'
+    CHANGING wal_object-relationship.
+  PERFORM f_get_child_value USING io_object_node 'parent_type'
+    CHANGING wal_object-parent_type.
+  PERFORM f_get_child_value USING io_object_node 'parent_name'
+    CHANGING wal_object-parent_name.
+  PERFORM f_get_child_value USING io_object_node 'relation_reason'
+    CHANGING wal_object-relation_reason.
+
+  IF wal_object-source_object_type IS INITIAL.
+    wal_object-source_object_type = wal_object-object_type.
+  ENDIF.
+  IF wal_object-source_object_name IS INITIAL.
+    wal_object-source_object_name = wal_object-object_name.
+  ENDIF.
+  wal_object-target_object_name = wal_object-object_name.
 
   PERFORM f_get_child_value USING io_object_node 'original_system'
     CHANGING wal_object-original_system.
@@ -1499,6 +1527,8 @@ FORM f_build_fieldcat
   PERFORM f_add_fieldcat USING 'LIGHT'          'Estado'         1 6  abap_true  abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'OBJECT_TYPE'    'Tipo'           2 10 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'OBJECT_NAME'    'Objeto'         3 40 abap_false abap_true  CHANGING ct_fieldcat.
+  PERFORM f_add_fieldcat USING 'RELATIONSHIP'   'Relacion'       4 12 abap_false abap_false CHANGING ct_fieldcat.
+  PERFORM f_add_fieldcat USING 'PARENT_NAME'    'Objeto padre'   5 40 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'SHORT_TEXT'     'Descripción'    4 50 abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'ORIGINAL_LANG'  'Idioma'         5 8  abap_false abap_false CHANGING ct_fieldcat.
   PERFORM f_add_fieldcat USING 'LAST_CHANGE'    'Último Cambio'  6 12 abap_false abap_false CHANGING ct_fieldcat.

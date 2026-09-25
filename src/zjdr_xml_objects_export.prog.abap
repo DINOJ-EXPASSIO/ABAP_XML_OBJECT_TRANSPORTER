@@ -36,7 +36,7 @@ CONSTANTS:
   cg_button_export TYPE syucomm VALUE 'ZEXP_XML'.
 
 CONSTANTS:
-  cg_xml_version TYPE string VALUE '1.2'.
+  cg_xml_version TYPE string VALUE '1.3'.
 
 CONSTANTS:
   cg_type_prog TYPE string VALUE 'PROG',
@@ -76,6 +76,10 @@ TYPES:
     masterlang  TYPE tadir-masterlang,
     last_change TYPE sy-datum,
     source_type TYPE string,
+    relationship TYPE string,
+    parent_type TYPE string,
+    parent_name TYPE tadir-obj_name,
+    relation_reason TYPE string,
     status_text TYPE string,
   END OF ty_alv_object.
 
@@ -731,6 +735,8 @@ FORM f_select_objects.
     wal_alv-masterlang  = wal_tadir-masterlang.
     wal_alv-last_change = vl_last_change.
     wal_alv-source_type = 'TADIR'.
+    wal_alv-relationship = 'ROOT'.
+    wal_alv-relation_reason = 'USER_SELECTION'.
     wal_alv-status_text = 'No exportado'.
 
     APPEND wal_alv TO tg_alv_object.
@@ -1454,6 +1460,15 @@ FORM f_export_object_to_xml
   APPEND |      <original_language>{ is_object-masterlang }</original_language>| TO ct_xml.
   APPEND |      <last_change>{ is_object-last_change }</last_change>| TO ct_xml.
   APPEND |      <source_type>{ is_object-source_type }</source_type>| TO ct_xml.
+  APPEND |      <source_object_type>{ is_object-object_type }</source_object_type>| TO ct_xml.
+  APPEND |      <source_object_name>{ vl_name }</source_object_name>| TO ct_xml.
+  APPEND |      <relationship>{ is_object-relationship }</relationship>| TO ct_xml.
+  PERFORM f_escape_xml USING is_object-parent_type CHANGING vl_text.
+  APPEND |      <parent_type>{ vl_text }</parent_type>| TO ct_xml.
+  PERFORM f_escape_xml USING is_object-parent_name CHANGING vl_text.
+  APPEND |      <parent_name>{ vl_text }</parent_name>| TO ct_xml.
+  PERFORM f_escape_xml USING is_object-relation_reason CHANGING vl_text.
+  APPEND |      <relation_reason>{ vl_text }</relation_reason>| TO ct_xml.
 
   CASE is_object-object_type.
 
