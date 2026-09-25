@@ -53,7 +53,8 @@ CONSTANTS:
 
 CONSTANTS:
   cg_button_import TYPE syucomm VALUE 'ZIMP_XML',
-  cg_button_log TYPE syucomm VALUE 'ZLOG_XML'.
+  cg_button_log TYPE syucomm VALUE 'ZLOG_XML',
+  cg_button_log_download TYPE syucomm VALUE 'ZDL_LOG'.
 
 *&---------------------------------------------------------------------*
 *& TYPES
@@ -306,6 +307,13 @@ CLASS lcl_event_handler IMPLEMENTATION.
     wal_toolbar-quickinfo = 'Detalle de fuentes, interfaces y activacion'.
     APPEND wal_toolbar TO e_object->mt_toolbar.
 
+    CLEAR wal_toolbar.
+    wal_toolbar-function = cg_button_log_download.
+    wal_toolbar-icon = icon_export.
+    wal_toolbar-text = 'Descargar log'.
+    wal_toolbar-quickinfo = 'Descargar el log de la sesion como archivo local'.
+    APPEND wal_toolbar TO e_object->mt_toolbar.
+
   ENDMETHOD. " handle_toolbar
 
   METHOD handle_user_command.
@@ -316,6 +324,8 @@ CLASS lcl_event_handler IMPLEMENTATION.
         PERFORM f_import_selected_objects.
       WHEN cg_button_log.
         PERFORM f_display_log.
+      WHEN cg_button_log_download.
+        PERFORM f_download_log.
 
     ENDCASE.
 
@@ -1083,7 +1093,8 @@ ENDFORM. " f_validate_xml
 *&---------------------------------------------------------------------*
 FORM f_validate_package.
 
-  DATA: vl_devclass TYPE tdevc-devclass.
+  DATA: vl_devclass TYPE tdevc-devclass,
+        wal_request TYPE e070.
 
   IF p_pack IS NOT INITIAL.
     vg_package = p_pack.
@@ -1110,6 +1121,19 @@ FORM f_validate_package.
 
   IF p_req IS INITIAL.
     MESSAGE 'Para package no local debe informar una orden de transporte.' TYPE 'E'.
+  ENDIF.
+
+  SELECT SINGLE * FROM e070 INTO wal_request WHERE trkorr EQ p_req.
+  IF sy-subrc NE 0.
+    MESSAGE 'La orden o tarea de transporte indicada no existe.' TYPE 'E'.
+  ENDIF.
+
+  IF wal_request-trfunction NE 'K' AND wal_request-trfunction NE 'W'.
+    MESSAGE 'La orden indicada no es una orden o tarea Workbench.' TYPE 'E'.
+  ENDIF.
+
+  IF wal_request-trstatus NE 'D'.
+    MESSAGE 'La orden o tarea de transporte no esta modificable.' TYPE 'E'.
   ENDIF.
 
 ENDFORM. " f_validate_package
@@ -3140,6 +3164,40 @@ FORM f_display_log.
       vl_message = lo_error->get_text( ).
       MESSAGE vl_message TYPE 'I'.
   ENDTRY.
+ENDFORM.
+
+FORM f_download_log.
+  DATA: tl_file TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+        vl_file TYPE string,
+        vl_path TYPE string,
+        vl_fullpath TYPE string,
+        vl_action TYPE i.
+  IF tg_log IS INITIAL.
+    MESSAGE 'No hay entradas en el log para descargar.' TYPE 'I'.
+    RETURN.
+  ENDIF.
+  APPEND 'OBJECT_TYPE;OBJECT_NAME;STEP;STATUS;MESSAGE' TO tl_file.
+  LOOP AT tg_log INTO DATA(wal_log).
+    APPEND |{ wal_log-object_type };{ wal_log-object_name };{ wal_log-step };{ wal_log-status };{ wal_log-message }| TO tl_file.
+  ENDLOOP.
+  cl_gui_frontend_services=>file_save_dialog(
+    EXPORTING default_extension = 'csv'
+              default_file_name = |XML_IMPORT_LOG_{ sy-datum }_{ sy-uzeit }.csv|
+              file_filter = 'CSV Files (*.csv)|*.csv|All Files (*.*)|*.*|'
+    CHANGING filename = vl_file path = vl_path fullpath = vl_fullpath user_action = vl_action
+    EXCEPTIONS OTHERS = 1 ).
+  IF sy-subrc <> 0 OR vl_action = cl_gui_frontend_services=>action_cancel.
+    RETURN.
+  ENDIF.
+  cl_gui_frontend_services=>gui_download(
+    EXPORTING filename = vl_fullpath filetype = 'ASC' codepage = '4110'
+    CHANGING data_tab = tl_file
+    EXCEPTIONS OTHERS = 1 ).
+  IF sy-subrc <> 0.
+    MESSAGE 'No se pudo descargar el log de importacion.' TYPE 'I' DISPLAY LIKE 'E'.
+  ELSE.
+    MESSAGE |Log descargado: { vl_fullpath }| TYPE 'S'.
+  ENDIF.
 ENDFORM.
 
 * Validate source-based payloads before any repository change.
