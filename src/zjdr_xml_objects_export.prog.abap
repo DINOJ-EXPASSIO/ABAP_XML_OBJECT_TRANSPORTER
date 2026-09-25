@@ -2940,7 +2940,7 @@ FORM f_expand_program_dependencies.
     ENDIF.
     IF vl_scan_program IS NOT INITIAL.
       CLEAR: tl_names, tl_tadir, tl_function_pools, tl_groups, tl_group_tadir.
-      PERFORM f_collect_program_dependency_names
+      PERFORM f_collect_prog_dep_names
         USING vl_scan_program CHANGING tl_names.
       IF tl_names IS NOT INITIAL.
         SELECT * FROM tadir INTO TABLE @tl_tadir
@@ -3051,7 +3051,7 @@ FORM f_dependency_creates_cycle
   ENDWHILE.
 ENDFORM.
 
-FORM f_collect_program_dependency_names
+FORM f_collect_prog_dep_names
   USING iv_program TYPE progname
   CHANGING ct_names TYPE tyt_string.
   DATA: tl_source TYPE ty_t_source,

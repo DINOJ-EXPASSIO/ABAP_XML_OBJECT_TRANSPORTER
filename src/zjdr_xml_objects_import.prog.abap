@@ -1315,7 +1315,8 @@ FORM f_validate_dependency_graph.
         wal_transitive TYPE ty_dependency_ref,
         vl_changed TYPE abap_bool,
         vl_repo_type TYPE tadir-object,
-        vl_existing TYPE tadir-obj_name.
+        vl_existing TYPE tadir-obj_name,
+        vl_message TYPE string.
   FIELD-SYMBOLS <parent> TYPE ty_import_object.
   tl_closure = tg_dependencies.
   LOOP AT tg_dependencies INTO DATA(wal_dependency).
@@ -1340,9 +1341,8 @@ FORM f_validate_dependency_graph.
       WHERE pgmid = 'R3TR' AND object = vl_repo_type
         AND obj_name = wal_dependency-object_name.
     IF sy-subrc <> 0.
-      PERFORM f_set_object_error
-        USING |Dependencia faltante: { wal_dependency-object_type } { wal_dependency-object_name }.|
-        CHANGING <parent>.
+      vl_message = |Dependencia faltante: { wal_dependency-object_type } { wal_dependency-object_name }.|.
+      PERFORM f_set_object_error USING vl_message CHANGING <parent>.
     ENDIF.
   ENDLOOP.
   DO.
@@ -1836,7 +1836,7 @@ FORM f_import_selected_objects.
 
   ENDLOOP.
 
-  PERFORM f_validate_selected_dependencies.
+  PERFORM f_validate_selected_deps.
 
   vl_count_txt = vl_count.
 
@@ -1940,12 +1940,13 @@ ENDFORM. " f_import_selected_objects
 
 * A root must not be imported while an explicitly exported dependency of that
 * root was left out of the current ALV selection.
-FORM f_validate_selected_dependencies.
+FORM f_validate_selected_deps.
   FIELD-SYMBOLS: <root> TYPE ty_import_object,
                  <dependency> TYPE ty_import_object.
   DATA: vl_repo_type TYPE tadir-object,
         vl_dependency_name TYPE tadir-obj_name,
-        vl_existing TYPE tadir-obj_name.
+        vl_existing TYPE tadir-obj_name,
+        vl_message TYPE string.
   LOOP AT tg_dependencies INTO DATA(wal_dependency).
     READ TABLE tg_objects ASSIGNING <root>
       WITH KEY object_type = wal_dependency-parent_type
@@ -1968,9 +1969,8 @@ FORM f_validate_selected_dependencies.
           AND obj_name = vl_dependency_name.
       IF sy-subrc <> 0.
         <root>-selected = abap_false.
-        PERFORM f_set_object_error
-          USING |Dependencia no seleccionada ni existente: { wal_dependency-object_type } { vl_dependency_name }.|
-          CHANGING <root>.
+        vl_message = |Dependencia no seleccionada ni existente: { wal_dependency-object_type } { vl_dependency_name }.|.
+        PERFORM f_set_object_error USING vl_message CHANGING <root>.
       ENDIF.
     ENDIF.
   ENDLOOP.
