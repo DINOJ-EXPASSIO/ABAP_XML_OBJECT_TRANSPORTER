@@ -2411,7 +2411,7 @@ FORM f_apply_source_mappings
 ENDFORM.
 
 FORM f_replace_source_identifier
-  USING iv_source TYPE string iv_target TYPE string
+  USING iv_source TYPE any iv_target TYPE any
   CHANGING cv_line TYPE string.
   DATA: vl_upper_line TYPE string,
         vl_upper_source TYPE string,
@@ -2601,6 +2601,7 @@ FORM f_import_prog
   CHANGING cs_object TYPE ty_import_object.
   DATA: tl_source TYPE tyt_report_line,
         vl_program TYPE progname,
+        vl_register_program TYPE progname,
         vl_message TYPE string,
         vl_error TYPE abap_bool,
         vl_package_warning TYPE string,
@@ -2638,8 +2639,12 @@ FORM f_import_prog
       IF cs_object-import_status = cg_status_err.
         RETURN.
       ENDIF.
-      PERFORM f_register_program_package USING COND progname(
-        WHEN wal_source-include = cs_object-object_name THEN vl_program ELSE wal_source-include )
+      IF wal_source-include = cs_object-object_name.
+        vl_register_program = vl_program.
+      ELSE.
+        vl_register_program = wal_source-include.
+      ENDIF.
+      PERFORM f_register_program_package USING vl_register_program
         CHANGING vl_error vl_message.
       IF vl_error = abap_true.
         vl_package_warning = vl_message.
