@@ -2332,6 +2332,10 @@ FORM f_import_ttyp
       IF cs_object-target_object_name IS NOT INITIAL.
         wal_dd40v-typename = cs_object-target_object_name.
       ENDIF.
+      PERFORM f_map_ddic_reference USING 'DTEL' wal_dd40v-rowtype
+        CHANGING wal_dd40v-rowtype.
+      PERFORM f_map_ddic_reference USING 'TABL' wal_dd40v-rowtype
+        CHANGING wal_dd40v-rowtype.
 
       CALL FUNCTION 'DDIF_TTYP_PUT'
         EXPORTING
