@@ -3365,7 +3365,15 @@ FORM f_import_oo
     PERFORM f_set_object_error USING vl_message CHANGING cs_object.
     RETURN.
   ENDIF.
-  wal_key-clsname = wal_oo-object_name.
+  wal_key-clsname = cs_object-target_object_name.
+  IF wal_key-clsname IS INITIAL.
+    wal_key-clsname = wal_oo-object_name.
+  ENDIF.
+  IF cs_object-object_type = 'CLAS'.
+    wal_oo-class_properties-clsname = wal_key-clsname.
+  ELSE.
+    wal_oo-interface_properties-clsname = wal_key-clsname.
+  ENDIF.
   TRY.
       IF cs_object-oo_prepared IS INITIAL.
         IF cs_object-object_type = 'CLAS'.
