@@ -359,6 +359,7 @@ START-OF-SELECTION.
   PERFORM f_select_objects.
   PERFORM f_select_idoc_definitions.
   PERFORM f_filter_customer_objects.
+  PERFORM f_expand_program_dependencies.
 
 
   IF tg_alv_object IS INITIAL.
@@ -2852,6 +2853,97 @@ FORM f_filter_customer_objects.
       DELETE tg_alv_object.
     ENDIF.
   ENDLOOP.
+ENDFORM.
+
+* Expand statically identifiable repository dependencies before the ALV is
+* displayed.  They remain ordinary ALV rows, so the user can deselect them.
+FORM f_expand_program_dependencies.
+  DATA: vl_index TYPE i VALUE 1,
+        wal_parent TYPE ty_alv_object,
+        tl_names TYPE tyt_string,
+        tl_tadir TYPE tyt_tadir,
+        wal_dependency TYPE ty_alv_object,
+        vl_text TYPE string,
+        vl_date TYPE sy-datum.
+  WHILE vl_index <= lines( tg_alv_object ).
+    READ TABLE tg_alv_object INTO wal_parent INDEX vl_index.
+    IF sy-subrc = 0 AND wal_parent-object_type = cg_type_prog.
+      CLEAR: tl_names, tl_tadir.
+      PERFORM f_collect_program_dependency_names
+        USING wal_parent-object_name CHANGING tl_names.
+      IF tl_names IS NOT INITIAL.
+        SELECT * FROM tadir INTO TABLE @tl_tadir
+          FOR ALL ENTRIES IN @tl_names
+          WHERE pgmid = 'R3TR'
+            AND obj_name = @tl_names-table_line
+            AND srcsystem <> 'SAP'
+            AND srcsystem <> @space
+            AND genflag <> 'X'
+            AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
+      ENDIF.
+      LOOP AT tl_tadir INTO DATA(wal_tadir).
+        READ TABLE tg_alv_object TRANSPORTING NO FIELDS
+          WITH KEY object_type = wal_tadir-object object_name = wal_tadir-obj_name.
+        IF sy-subrc = 0.
+          CONTINUE.
+        ENDIF.
+        CLEAR: wal_dependency, vl_text, vl_date.
+        PERFORM f_get_object_text USING wal_tadir-object wal_tadir-obj_name
+          CHANGING vl_text vl_date.
+        wal_dependency-light = cg_status_not_exported.
+        wal_dependency-package = wal_tadir-devclass.
+        wal_dependency-original_system = wal_tadir-srcsystem.
+        wal_dependency-object_type = wal_tadir-object.
+        wal_dependency-object_name = wal_tadir-obj_name.
+        wal_dependency-short_text = vl_text.
+        wal_dependency-masterlang = wal_tadir-masterlang.
+        wal_dependency-last_change = vl_date.
+        wal_dependency-source_type = 'DEPENDENCY'.
+        wal_dependency-relationship = 'DEPENDENCY'.
+        wal_dependency-parent_type = wal_parent-object_type.
+        wal_dependency-parent_name = wal_parent-object_name.
+        wal_dependency-relation_reason = 'STATIC_SOURCE_REFERENCE'.
+        wal_dependency-status_text = 'Dependencia detectada; seleccione si desea incluirla'.
+        APPEND wal_dependency TO tg_alv_object.
+      ENDLOOP.
+    ENDIF.
+    vl_index = vl_index + 1.
+  ENDWHILE.
+ENDFORM.
+
+FORM f_collect_program_dependency_names
+  USING iv_program TYPE progname
+  CHANGING ct_names TYPE tyt_string.
+  DATA: tl_source TYPE ty_t_source,
+        tl_includes TYPE tyt_include,
+        tl_matches TYPE match_result_tab,
+        vl_upper TYPE string,
+        vl_token TYPE string.
+  CLEAR ct_names.
+  READ REPORT iv_program INTO tl_source.
+  IF sy-subrc <> 0.
+    RETURN.
+  ENDIF.
+  PERFORM f_detect_includes USING iv_program tl_source CHANGING tl_includes.
+  LOOP AT tl_includes INTO DATA(wal_include).
+    READ REPORT wal_include-include_name INTO DATA(tl_include_source).
+    IF sy-subrc = 0.
+      APPEND LINES OF tl_include_source TO tl_source.
+    ENDIF.
+  ENDLOOP.
+  LOOP AT tl_source INTO DATA(vl_line).
+    vl_upper = to_upper( vl_line ).
+    CLEAR tl_matches.
+    FIND ALL OCCURRENCES OF REGEX '[A-Z][A-Z0-9_/]{2,}' IN vl_upper RESULTS tl_matches.
+    LOOP AT tl_matches INTO DATA(wal_match).
+      vl_token = substring( val = vl_upper off = wal_match-offset len = wal_match-length ).
+      IF vl_token <> iv_program.
+        APPEND vl_token TO ct_names.
+      ENDIF.
+    ENDLOOP.
+  ENDLOOP.
+  SORT ct_names.
+  DELETE ADJACENT DUPLICATES FROM ct_names.
 ENDFORM.
 
 * Versioned bundle: every component carries its own identity and read error.
