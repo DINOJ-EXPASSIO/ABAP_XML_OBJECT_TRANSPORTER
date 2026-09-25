@@ -313,6 +313,12 @@
      <LENGTH>16</LENGTH>
     </item>
     <item>
+     <ID>S</ID>
+     <KEY>S_REQ</KEY>
+     <ENTRY>Orden / tarea de transporte</ENTRY>
+     <LENGTH>34</LENGTH>
+    </item>
+    <item>
      <ID>T</ID>
      <ENTRY>Exportador de Objetos y paquetes a XML - Expassio</ENTRY>
      <LENGTH>49</LENGTH>

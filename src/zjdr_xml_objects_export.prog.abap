@@ -21,7 +21,7 @@ INCLUDE <icon>.
 *&---------------------------------------------------------------------*
 *& TABLES
 *&---------------------------------------------------------------------*
-TABLES: tadir.
+TABLES: tadir, e070.
 
 *&---------------------------------------------------------------------*
 *& CONSTANTS
@@ -36,7 +36,7 @@ CONSTANTS:
   cg_button_export TYPE syucomm VALUE 'ZEXP_XML'.
 
 CONSTANTS:
-  cg_xml_version TYPE string VALUE '1.1'.
+  cg_xml_version TYPE string VALUE '1.2'.
 
 CONSTANTS:
   cg_type_prog TYPE string VALUE 'PROG',
@@ -61,6 +61,7 @@ CONSTANTS:
 TYPES:
   ty_t_source  TYPE STANDARD TABLE OF string WITH EMPTY KEY,
   ty_t_xml     TYPE STANDARD TABLE OF string WITH EMPTY KEY,
+  tyt_tadir    TYPE STANDARD TABLE OF tadir WITH EMPTY KEY,
   tyt_progname TYPE STANDARD TABLE OF progname WITH EMPTY KEY,
   tyt_string   TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 
@@ -68,6 +69,7 @@ TYPES:
   BEGIN OF ty_alv_object,
     light       TYPE icon_d,
     package     TYPE devclass,
+    original_system TYPE tadir-srcsystem,
     object_type TYPE string,
     object_name TYPE tadir-obj_name,
     short_text  TYPE string,
@@ -101,6 +103,97 @@ TYPES:
 
 TYPES:
   tyt_f4_object TYPE STANDARD TABLE OF ty_f4_object WITH EMPTY KEY.
+
+
+* Source-based OO interchange; generated method include names are not portable.
+* Shared wire types. Mirrored in both standalone reports by the local check.
+TYPES: BEGIN OF ty_prog_component,
+         kind TYPE string,
+         name TYPE tadir-obj_name,
+         language TYPE sylangu,
+         original_system TYPE tadir-srcsystem,
+         content TYPE xstring,
+         error TYPE string,
+       END OF ty_prog_component.
+TYPES: BEGIN OF ty_prog_bundle,
+         format TYPE string,
+         program TYPE progname,
+         program_type TYPE trdir-subc,
+         components TYPE STANDARD TABLE OF ty_prog_component WITH EMPTY KEY,
+       END OF ty_prog_bundle.
+TYPES: BEGIN OF ty_prog_screen,
+         header TYPE rpy_dyhead,
+         containers TYPE dycatt_tab,
+         fields TYPE dyfatc_tab,
+         flow TYPE swydyflow,
+         native_header TYPE d020s,
+         native_fields TYPE STANDARD TABLE OF d021s WITH DEFAULT KEY,
+         texts TYPE STANDARD TABLE OF d021t WITH EMPTY KEY,
+       END OF ty_prog_screen.
+TYPES: BEGIN OF ty_prog_cua,
+         adm TYPE rsmpe_adm,
+         sta TYPE STANDARD TABLE OF rsmpe_stat WITH DEFAULT KEY,
+         fun TYPE STANDARD TABLE OF rsmpe_funt WITH DEFAULT KEY,
+         men TYPE STANDARD TABLE OF rsmpe_men WITH DEFAULT KEY,
+         mtx TYPE STANDARD TABLE OF rsmpe_mnlt WITH DEFAULT KEY,
+         act TYPE STANDARD TABLE OF rsmpe_act WITH DEFAULT KEY,
+         but TYPE STANDARD TABLE OF rsmpe_but WITH DEFAULT KEY,
+         pfk TYPE STANDARD TABLE OF rsmpe_pfk WITH DEFAULT KEY,
+         set TYPE STANDARD TABLE OF rsmpe_staf WITH DEFAULT KEY,
+         doc TYPE STANDARD TABLE OF rsmpe_atrt WITH DEFAULT KEY,
+         tit TYPE STANDARD TABLE OF rsmpe_titt WITH DEFAULT KEY,
+         biv TYPE STANDARD TABLE OF rsmpe_buts WITH DEFAULT KEY,
+       END OF ty_prog_cua.
+TYPES: BEGIN OF ty_prog_doc,
+         info TYPE dokil,
+         head TYPE thead,
+         lines TYPE STANDARD TABLE OF tline WITH DEFAULT KEY,
+       END OF ty_prog_doc.
+TYPES: BEGIN OF ty_prog_tran,
+         definition TYPE tstc,
+         gui TYPE tstcc,
+         parameters TYPE tstcp,
+         texts TYPE STANDARD TABLE OF tstct WITH DEFAULT KEY,
+         auth TYPE STANDARD TABLE OF tstca WITH DEFAULT KEY,
+       END OF ty_prog_tran.
+TYPES: BEGIN OF ty_prog_tran_config,
+         kind TYPE rglif-docutype,
+         called TYPE tcode,
+         skip TYPE abap_bool,
+         independent TYPE abap_bool,
+         variant TYPE rsstcd-variant,
+         values TYPE STANDARD TABLE OF rsparam WITH DEFAULT KEY,
+       END OF ty_prog_tran_config.
+TYPES: BEGIN OF ty_prog_enho,
+         original TYPE enh_hook_admin,
+         shorttext TYPE string,
+         hooks TYPE enh_hook_impl_it,
+       END OF ty_prog_enho.
+TYPES: BEGIN OF ty_prog_enhs,
+         pgmid TYPE tadir-pgmid,
+         obj_name TYPE trobj_name,
+         obj_type TYPE trobjtype,
+         main_type TYPE trobjtype,
+         main_name TYPE eu_aname,
+         program TYPE progname,
+         shorttext TYPE string,
+         definitions TYPE enh_hook_def_ext_it,
+       END OF ty_prog_enhs.
+
+TYPES: BEGIN OF ty_oo_payload,
+         format TYPE string,
+         object_type TYPE string,
+         object_name TYPE seoclsname,
+         class_properties TYPE vseoclass,
+         interface_properties TYPE vseointerf,
+         source TYPE seop_source_string,
+         locals_def TYPE seop_source_string,
+         locals_imp TYPE seop_source_string,
+         macros TYPE seop_source_string,
+         testclasses TYPE seop_source_string,
+         textpool_language TYPE sylangu,
+         textpool TYPE STANDARD TABLE OF textpool WITH EMPTY KEY,
+       END OF ty_oo_payload.
 
 *&---------------------------------------------------------------------*
 *& DATA
@@ -196,7 +289,8 @@ SELECTION-SCREEN BEGIN OF BLOCK b01 WITH FRAME TITLE TEXT-001.
 
   SELECT-OPTIONS:
     s_pack FOR tadir-devclass,
-    s_obj  FOR tadir-obj_name.
+    s_obj  FOR tadir-obj_name,
+    s_req  FOR e070-trkorr.
 
 SELECTION-SCREEN END OF BLOCK b01.
 
@@ -260,6 +354,8 @@ START-OF-SELECTION.
 
   PERFORM f_select_objects.
   PERFORM f_select_idoc_definitions.
+  PERFORM f_filter_customer_objects.
+
 
   IF tg_alv_object IS INITIAL.
     MESSAGE 'No se encontraron objetos para los criterios seleccionados.' TYPE 'I'.
@@ -336,8 +432,9 @@ FORM f_validate_selection.
   ENDIF.
 
   IF s_pack[] IS INITIAL
- AND s_obj[]  IS INITIAL.
-    MESSAGE 'Debe informar al menos un package u objeto.' TYPE 'E'.
+ AND s_obj[]  IS INITIAL
+ AND s_req[] IS INITIAL.
+    MESSAGE 'Debe informar al menos un package, objeto u orden de transporte.' TYPE 'E'.
   ENDIF.
 
   IF cb_idoc IS INITIAL
@@ -391,31 +488,15 @@ ENDFORM. " f_f4_object_selection
 FORM f_get_f4_objects
   CHANGING ct_f4_object TYPE tyt_f4_object.
 
+  DATA tl_tadir TYPE tyt_tadir.
+
   CLEAR ct_f4_object.
-
-  IF s_pack[] IS NOT INITIAL.
-
-    SELECT obj_name,
-           object,
-           devclass
-      FROM tadir
-      INTO TABLE @ct_f4_object
-      WHERE devclass IN @s_pack
-        AND genflag  <> 'X'
-        AND object   IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
-
-  ELSE.
-
-    SELECT obj_name,
-           object,
-           devclass
-      FROM tadir
-      INTO TABLE @ct_f4_object
-      WHERE genflag  <> 'X'
-        AND object   IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP')
-        AND obj_name LIKE 'Z%'.
-
-  ENDIF.
+  PERFORM f_read_object_candidates CHANGING tl_tadir.
+  LOOP AT tl_tadir INTO DATA(wal_tadir).
+    APPEND VALUE #( obj_name = wal_tadir-obj_name
+                    object = wal_tadir-object
+                    devclass = wal_tadir-devclass ) TO ct_f4_object.
+  ENDLOOP.
 
   SORT ct_f4_object BY devclass object obj_name.
   DELETE ADJACENT DUPLICATES FROM ct_f4_object
@@ -429,6 +510,7 @@ FORM f_build_export_scope
   DATA:
     vl_pack_count  TYPE i,
     vl_obj_count   TYPE i,
+    vl_req_count   TYPE i,
     vl_idseg_count TYPE i,
     vl_idoct_count TYPE i,
     vl_mesty_count TYPE i.
@@ -437,19 +519,107 @@ FORM f_build_export_scope
 
   vl_pack_count  = lines( s_pack[] ).
   vl_obj_count   = lines( s_obj[] ).
+  vl_req_count   = lines( s_req[] ).
   vl_idseg_count = lines( s_idseg[] ).
   vl_idoct_count = lines( s_idoct[] ).
   vl_mesty_count = lines( s_mesty[] ).
 
   cv_export_scope =
-    |PACKAGES:{ vl_pack_count }; OBJECTS:{ vl_obj_count }; IDOC_SEG:{ vl_idseg_count }; IDOC_TYPES:{ vl_idoct_count }; MESSAGE_TYPES:{ vl_mesty_count }|.
+    |PACKAGES:{ vl_pack_count }; OBJECTS:{ vl_obj_count }; TRANSPORTS:{ vl_req_count }; IDOC_SEG:{ vl_idseg_count }; IDOC_TYPES:{ vl_idoct_count }; MESSAGE_TYPES:{ vl_mesty_count }|.
 
 ENDFORM. " f_build_export_scope
+
+* Read the same candidates for execution and object value help.
+* Empty package/name ranges impose no restriction; an OT narrows the set.
+FORM f_read_object_candidates
+  CHANGING ct_tadir TYPE tyt_tadir.
+
+  DATA: tl_entries TYPE STANDARD TABLE OF e071,
+        tl_keys    TYPE STANDARD TABLE OF tadir,
+        wal_key    TYPE tadir,
+        vl_result  TYPE trpari-s_checked,
+        vl_unresolved TYPE i.
+
+  CLEAR ct_tadir.
+
+  IF s_req[] IS INITIAL.
+    SELECT * FROM tadir
+      INTO TABLE @ct_tadir
+      WHERE pgmid    = 'R3TR'
+        AND devclass IN @s_pack
+        AND obj_name IN @s_obj
+        AND srcsystem <> 'SAP'
+        AND srcsystem <> @space
+        AND genflag <> 'X'
+        AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
+    RETURN.
+  ENDIF.
+
+  "Include entries on the request itself and on its immediate tasks.
+  "Selecting a task alone does not include sibling tasks.
+  SELECT e071~* FROM e071
+    INNER JOIN e070 ON e070~trkorr = e071~trkorr
+    INTO TABLE @tl_entries
+    WHERE ( e070~trkorr IN @s_req OR e070~strkorr IN @s_req )
+      AND e071~pgmid IN ('R3TR', 'LIMU').
+
+  LOOP AT tl_entries INTO DATA(wal_entry).
+    CLEAR: wal_key, vl_result.
+    CASE wal_entry-pgmid.
+      WHEN 'R3TR'.
+        wal_key-pgmid    = wal_entry-pgmid.
+        wal_key-object   = wal_entry-object.
+        wal_key-obj_name = wal_entry-obj_name.
+      WHEN 'LIMU'.
+        "Variants are not repository sources supported by this exporter.
+        IF wal_entry-object = 'VARX'.
+          CONTINUE.
+        ENDIF.
+        CALL FUNCTION 'TR_CHECK_TYPE'
+          EXPORTING wi_e071 = wal_entry
+          IMPORTING we_tadir = wal_key
+                    pe_result = vl_result
+          EXCEPTIONS OTHERS = 1.
+        IF sy-subrc <> 0 OR vl_result NA 'TL'
+        OR wal_key-object IS INITIAL OR wal_key-obj_name IS INITIAL.
+          vl_unresolved = vl_unresolved + 1.
+          CONTINUE.
+        ENDIF.
+    ENDCASE.
+    APPEND wal_key TO tl_keys.
+  ENDLOOP.
+
+  IF vl_unresolved > 0.
+    MESSAGE 'Hay subobjetos de la OT que no pudieron resolverse y fueron omitidos.'
+      TYPE 'S' DISPLAY LIKE 'W'.
+  ENDIF.
+
+  "An empty FOR ALL ENTRIES would select the entire repository.
+  IF tl_keys IS INITIAL.
+    RETURN.
+  ENDIF.
+  SORT tl_keys BY object obj_name.
+  DELETE ADJACENT DUPLICATES FROM tl_keys COMPARING object obj_name.
+
+  SELECT * FROM tadir
+    INTO TABLE @ct_tadir
+    FOR ALL ENTRIES IN @tl_keys
+    WHERE pgmid    = 'R3TR'
+      AND object   = @tl_keys-object
+      AND obj_name = @tl_keys-obj_name
+      AND devclass IN @s_pack
+      AND obj_name IN @s_obj
+        AND srcsystem <> 'SAP'
+        AND srcsystem <> @space
+      AND genflag <> 'X'
+      AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
+
+ENDFORM. " f_read_object_candidates
 
 FORM f_select_objects.
 
   DATA:
-    tl_tadir               TYPE STANDARD TABLE OF tadir,
+    tl_tadir               TYPE tyt_tadir,
     wal_alv                TYPE ty_alv_object,
     vl_object_type         TYPE string,
     vl_short_text          TYPE string,
@@ -458,44 +628,12 @@ FORM f_select_objects.
     vl_is_report           TYPE abap_bool.
 
   IF s_pack[] IS INITIAL
- AND s_obj[] IS INITIAL.
+ AND s_obj[] IS INITIAL
+ AND s_req[] IS INITIAL.
     RETURN.
   ENDIF.
 
-  IF s_pack[] IS NOT INITIAL
- AND s_obj[] IS NOT INITIAL.
-
-    SELECT *
-      FROM tadir
-      INTO TABLE @tl_tadir
-      WHERE devclass IN @s_pack
-        AND obj_name IN @s_obj
-        AND genflag  <> 'X'
-        AND object   IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
-
-  ELSEIF s_pack[] IS NOT INITIAL.
-
-    SELECT *
-      FROM tadir
-      INTO TABLE @tl_tadir
-      WHERE devclass IN @s_pack
-        AND genflag  <> 'X'
-        AND object   IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
-
-  ELSE.
-
-    SELECT *
-      FROM tadir
-      INTO TABLE @tl_tadir
-      WHERE obj_name IN @s_obj
-        AND genflag  <> 'X'
-        AND object   IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
-
-  ENDIF.
-
-  IF sy-subrc NE 0.
-    RETURN.
-  ENDIF.
+  PERFORM f_read_object_candidates CHANGING tl_tadir.
 
   SORT tl_tadir BY devclass object obj_name.
   DELETE ADJACENT DUPLICATES FROM tl_tadir COMPARING devclass object obj_name.
@@ -586,6 +724,7 @@ FORM f_select_objects.
 
     wal_alv-light       = cg_status_not_exported.
     wal_alv-package     = wal_tadir-devclass.
+    wal_alv-original_system = wal_tadir-srcsystem.
     wal_alv-object_type = vl_object_type.
     wal_alv-object_name = wal_tadir-obj_name.
     wal_alv-short_text  = vl_short_text.
@@ -1172,6 +1311,7 @@ FORM f_build_package_xml
   PERFORM f_escape_xml USING gv_export_scope CHANGING vl_escaped.
   APPEND |    <export_scope>{ vl_escaped }</export_scope>| TO ct_xml.
 
+  PERFORM f_append_range_xml USING 'transport_selection'    s_req[]   CHANGING ct_xml.
   PERFORM f_append_range_xml USING 'package_selection'      s_pack[]  CHANGING ct_xml.
   PERFORM f_append_range_xml USING 'object_selection'       s_obj[]   CHANGING ct_xml.
   PERFORM f_append_range_xml USING 'idoc_segment_selection' s_idseg[] CHANGING ct_xml.
@@ -1309,6 +1449,8 @@ FORM f_export_object_to_xml
   APPEND |    <object package="{ vl_package }" type="{ is_object-object_type }" name="{ vl_name }">| TO ct_xml.
   APPEND |      <package>{ vl_package }</package>| TO ct_xml.
   APPEND |      <short_text>{ vl_text }</short_text>| TO ct_xml.
+  PERFORM f_escape_xml USING is_object-original_system CHANGING vl_text.
+  APPEND |      <original_system>{ vl_text }</original_system>| TO ct_xml.
   APPEND |      <original_language>{ is_object-masterlang }</original_language>| TO ct_xml.
   APPEND |      <last_change>{ is_object-last_change }</last_change>| TO ct_xml.
   APPEND |      <source_type>{ is_object-source_type }</source_type>| TO ct_xml.
@@ -1364,8 +1506,12 @@ FORM f_export_object_to_xml
                  vl_warning
                  vl_error.
 
-    WHEN cg_type_clas OR cg_type_intf
-      OR cg_type_idsg OR cg_type_idbt OR cg_type_idex OR cg_type_idms OR cg_type_idas.
+    WHEN cg_type_clas OR cg_type_intf.
+      PERFORM f_export_class_or_intf
+        USING is_object-object_type is_object-object_name
+        CHANGING ct_xml vl_warning vl_error.
+
+    WHEN cg_type_idsg OR cg_type_idbt OR cg_type_idex OR cg_type_idms OR cg_type_idas.
       "The former payloads only contained technical fragments.  Marking them
       "as successful made an exported file look portable when it could not be
       "recreated by the importer. Keep the object in the manifest as ERROR so
@@ -1404,8 +1550,13 @@ FORM f_export_prog
   DATA:
     tl_source   TYPE ty_t_source,
     tl_include  TYPE tyt_include,
+    tl_nested TYPE tyt_include,
+    tl_nested_source TYPE ty_t_source,
+    vl_index TYPE i,
+    wal_nested TYPE ty_include,
     vl_escaped  TYPE string,
-    vl_line_num TYPE i.
+    vl_line_num TYPE i,
+    vl_customer TYPE abap_bool.
 
   CLEAR:
     cv_warning,
@@ -1442,9 +1593,32 @@ FORM f_export_prog
              tl_source
     CHANGING tl_include.
 
-  APPEND '      <includes>' TO ct_xml.
+  vl_index = 1.
+  WHILE vl_index <= lines( tl_include ).
+    READ TABLE tl_include INTO DATA(wal_pending) INDEX vl_index.
+    CLEAR tl_nested_source.
+    READ REPORT wal_pending-include_name INTO tl_nested_source.
+    IF sy-subrc = 0.
+      PERFORM f_detect_includes USING iv_object_name tl_nested_source CHANGING tl_nested.
+      LOOP AT tl_nested INTO wal_nested.
+        READ TABLE tl_include TRANSPORTING NO FIELDS
+          WITH KEY include_name = wal_nested-include_name.
+        IF sy-subrc <> 0 AND wal_nested-include_name <> iv_object_name.
+          APPEND wal_nested TO tl_include.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+    vl_index = vl_index + 1.
+  ENDWHILE.
+
+  APPEND '      <source_includes>' TO ct_xml.
 
   LOOP AT tl_include INTO DATA(wal_include).
+    PERFORM f_is_customer_object USING 'PROG' wal_include-include_name space
+      CHANGING vl_customer.
+    IF vl_customer IS INITIAL.
+      CONTINUE.
+    ENDIF.
 
     PERFORM f_export_include
       USING    wal_include-include_name
@@ -1453,8 +1627,10 @@ FORM f_export_prog
 
   ENDLOOP.
 
-  APPEND '      </includes>' TO ct_xml.
+  APPEND '      </source_includes>' TO ct_xml.
 
+  PERFORM f_export_prog_bundle USING iv_object_name tl_include
+    CHANGING ct_xml cv_warning.
 ENDFORM. " f_export_prog
 
 FORM f_export_include
@@ -1818,90 +1994,70 @@ FORM f_export_shlp
 ENDFORM. " f_export_shlp
 
 FORM f_export_class_or_intf
-  USING    iv_object_type TYPE string
-           iv_object_name TYPE tadir-obj_name
-  CHANGING ct_xml         TYPE ty_t_xml
-           cv_warning     TYPE abap_bool
-           cv_error       TYPE abap_bool.
-
-  DATA:
-    vl_clsname     TYPE seoclsname,
-    wal_seoclass   TYPE seoclass,
-    tl_seoclasstx  TYPE STANDARD TABLE OF seoclasstx,
-    tl_seocompo    TYPE STANDARD TABLE OF seocompo,
-    tl_includes    TYPE tyt_progname,
-    vl_xml         TYPE xstring,
-    vl_payload     TYPE string,
-    vl_include_cnt TYPE i.
-
-  CLEAR:
-    cv_warning,
-    cv_error,
-    wal_seoclass,
-    tl_seoclasstx,
-    tl_seocompo,
-    tl_includes.
-
-  vl_clsname = iv_object_name.
-
-  SELECT SINGLE *
-    FROM seoclass
-    INTO @wal_seoclass
-    WHERE clsname = @vl_clsname.
-
-  IF sy-subrc NE 0.
-    cv_error = abap_true.
-    APPEND '      <message>No se pudo obtener metadata SEOCLASS.</message>' TO ct_xml.
-    RETURN.
-  ENDIF.
-
-  SELECT *
-    FROM seoclasstx
-    INTO TABLE @tl_seoclasstx
-    WHERE clsname = @vl_clsname.
-
-  SELECT *
-    FROM seocompo
-    INTO TABLE @tl_seocompo
-    WHERE clsname = @vl_clsname.
-
-  CALL TRANSFORMATION id
-    SOURCE seoclass  = wal_seoclass
-           seoclasstx = tl_seoclasstx
-           seocompo   = tl_seocompo
-    RESULT XML vl_xml.
-
-  PERFORM f_xstring_to_base64
-    USING    vl_xml
-    CHANGING vl_payload.
-
-  APPEND '      <seo_payload encoding="base64" transformation="id">' TO ct_xml.
-  APPEND |        { vl_payload }| TO ct_xml.
-  APPEND '      </seo_payload>' TO ct_xml.
-
-  PERFORM f_collect_class_includes
-    USING    iv_object_name
-    CHANGING tl_includes.
-
-  vl_include_cnt = lines( tl_includes ).
-
-  IF vl_include_cnt IS INITIAL.
-    cv_warning = abap_true.
-    APPEND '      <warning>No se encontraron includes generados de clase/interface.</warning>' TO ct_xml.
-  ENDIF.
-
-  APPEND |      <source_includes count="{ vl_include_cnt }">| TO ct_xml.
-
-  LOOP AT tl_includes INTO DATA(vl_include).
-
-    PERFORM f_append_source_include_xml
-      USING    vl_include
-      CHANGING ct_xml
-               cv_warning.
-
-  ENDLOOP.
-
-  APPEND '      </source_includes>' TO ct_xml.
+  USING iv_object_type TYPE string
+        iv_object_name TYPE tadir-obj_name
+  CHANGING ct_xml TYPE ty_t_xml
+           cv_warning TYPE abap_bool
+           cv_error TYPE abap_bool.
+  DATA: wal_oo TYPE ty_oo_payload,
+        wal_key TYPE seoclskey,
+        lo_factory TYPE REF TO object,
+        lo_source TYPE REF TO object,
+        lo_error TYPE REF TO cx_root,
+        vl_include TYPE progname,
+        vl_xml TYPE xstring,
+        vl_payload TYPE string,
+        vl_message TYPE string.
+  CLEAR: cv_warning, cv_error.
+  wal_key-clsname = iv_object_name.
+  wal_oo-format = 'OO_SOURCE_1'.
+  wal_oo-textpool_language = sy-langu.
+  wal_oo-object_type = iv_object_type.
+  wal_oo-object_name = iv_object_name.
+  TRY.
+      CALL FUNCTION 'SEO_CLIF_GET'
+        EXPORTING cifkey = wal_key version = '1'
+        IMPORTING class = wal_oo-class_properties
+                  interface = wal_oo-interface_properties
+        EXCEPTIONS OTHERS = 1.
+      IF sy-subrc <> 0.
+        cv_error = abap_true.
+        APPEND '      <message>No se pudieron leer las propiedades OO activas.</message>' TO ct_xml.
+        RETURN.
+      ENDIF.
+      CALL METHOD ('CL_OO_FACTORY')=>('CREATE_INSTANCE') RECEIVING result = lo_factory.
+      CALL METHOD lo_factory->('CREATE_CLIF_SOURCE')
+        EXPORTING clif_name = wal_key-clsname version = 'A'
+        RECEIVING result = lo_source.
+      CALL METHOD lo_source->('GET_SOURCE') IMPORTING source = wal_oo-source.
+      IF wal_oo-source IS INITIAL.
+        cv_error = abap_true.
+        APPEND '      <message>La API OO no devolvio el fuente completo.</message>' TO ct_xml.
+        RETURN.
+      ENDIF.
+      IF iv_object_type = 'CLAS'.
+        vl_include = cl_oo_classname_service=>get_ccdef_name( wal_key-clsname ).
+        READ REPORT vl_include INTO wal_oo-locals_def STATE 'A'.
+        vl_include = cl_oo_classname_service=>get_ccimp_name( wal_key-clsname ).
+        READ REPORT vl_include INTO wal_oo-locals_imp STATE 'A'.
+        vl_include = cl_oo_classname_service=>get_ccmac_name( wal_key-clsname ).
+        READ REPORT vl_include INTO wal_oo-macros STATE 'A'.
+        vl_include = cl_oo_classname_service=>get_ccau_name( wal_key-clsname ).
+        READ REPORT vl_include INTO wal_oo-testclasses STATE 'A'.
+        vl_include = cl_oo_classname_service=>get_classpool_name( wal_key-clsname ).
+        READ TEXTPOOL vl_include INTO wal_oo-textpool LANGUAGE sy-langu STATE 'A'.
+      ENDIF.
+      CALL TRANSFORMATION id SOURCE oo = wal_oo RESULT XML vl_xml.
+      PERFORM f_xstring_to_base64 USING vl_xml CHANGING vl_payload.
+      APPEND '      <seo_payload encoding="base64" transformation="id" format="OO_SOURCE_1">' TO ct_xml.
+      APPEND vl_payload TO ct_xml.
+      APPEND '      </seo_payload>' TO ct_xml.
+    CATCH cx_root INTO lo_error.
+      cv_error = abap_true.
+      vl_message = lo_error->get_text( ).
+      PERFORM f_escape_xml USING vl_message CHANGING vl_message.
+      APPEND |      <message>{ vl_message }</message>| TO ct_xml.
+  ENDTRY.
 
 ENDFORM. " f_export_class_or_intf
 
@@ -1921,7 +2077,8 @@ FORM f_export_fugr
     vl_xml         TYPE xstring,
     vl_payload     TYPE string,
     vl_include_cnt TYPE i,
-    vl_fm_count    TYPE i.
+    vl_fm_count    TYPE i,
+    vl_fm_include  TYPE progname.
 
   CLEAR:
     cv_warning,
@@ -1984,6 +2141,42 @@ FORM f_export_fugr
   PERFORM f_collect_fugr_includes
     USING    iv_object_name
     CHANGING tl_includes.
+
+  "TRDIR does not reliably list inactive generated Uxx includes on every
+  "release. TFDIR is the Function Builder authority for those includes.
+  LOOP AT tl_tfdir INTO DATA(wal_tfdir).
+    CLEAR vl_fm_include.
+
+    IF wal_tfdir-include CP 'L*'.
+      vl_fm_include = wal_tfdir-include.
+    ELSEIF wal_tfdir-include CP 'U*'.
+      CONCATENATE 'L' iv_object_name wal_tfdir-include INTO vl_fm_include.
+    ELSEIF wal_tfdir-include IS NOT INITIAL.
+      CONCATENATE 'L' iv_object_name 'U' wal_tfdir-include INTO vl_fm_include.
+    ENDIF.
+
+    IF vl_fm_include IS INITIAL.
+      cv_warning = abap_true.
+      APPEND |      <warning>Módulo { wal_tfdir-funcname } sin include en TFDIR.</warning>| TO ct_xml.
+      CONTINUE.
+    ENDIF.
+
+    READ TABLE tl_includes WITH KEY table_line = vl_fm_include
+      TRANSPORTING NO FIELDS.
+    IF sy-subrc NE 0.
+      APPEND vl_fm_include TO tl_includes.
+    ENDIF.
+  ENDLOOP.
+
+  SORT tl_includes.
+  DELETE ADJACENT DUPLICATES FROM tl_includes.
+
+  LOOP AT tl_includes INTO DATA(vl_owned_include).
+    IF vl_owned_include <> vl_pname
+    AND vl_owned_include NP |L{ iv_object_name }*|.
+      DELETE tl_includes.
+    ENDIF.
+  ENDLOOP.
 
   vl_include_cnt = lines( tl_includes ).
 
@@ -2182,20 +2375,11 @@ FORM f_detect_includes
       CONTINUE.
     ENDIF.
 
-    IF vl_upper CP 'INCLUDE *.'.
-
-      REPLACE FIRST OCCURRENCE OF 'INCLUDE' IN vl_upper WITH ''.
-      CONDENSE vl_upper.
-
-      vl_include_name = vl_upper.
-
-      REPLACE ALL OCCURRENCES OF '.' IN vl_include_name WITH ''.
-      REPLACE ALL OCCURRENCES OF ':' IN vl_include_name WITH ''.
-      CONDENSE vl_include_name.
-
-      IF vl_include_name IS INITIAL.
-        CONTINUE.
-      ENDIF.
+    CLEAR vl_include_name.
+    FIND REGEX '^INCLUDE[ ]+([A-Z0-9_/]+)[ ]*(IF[ ]+FOUND[ ]*)?\.'
+      IN vl_upper SUBMATCHES vl_include_name.
+    IF sy-subrc = 0 AND vl_include_name <> 'STRUCTURE'
+    AND vl_include_name <> 'TYPE'.
 
       READ TABLE ct_include
         WITH KEY include_name = vl_include_name
@@ -2594,3 +2778,471 @@ FORM f_xstring_to_base64
       output = cv_base64.
 
 ENDFORM. " f_xstring_to_base64
+
+* Repository ownership takes precedence over naming conventions.
+FORM f_is_customer_object
+  USING iv_type TYPE csequence
+        iv_name TYPE csequence
+        iv_origin TYPE csequence
+  CHANGING cv_customer TYPE abap_bool.
+  DATA: wal_tadir TYPE tadir,
+        wal_entry TYPE e071,
+        vl_type TYPE tadir-object.
+  CLEAR cv_customer.
+  IF iv_origin = 'SAP' OR iv_name IS INITIAL.
+    RETURN.
+  ENDIF.
+  vl_type = iv_type.
+  IF vl_type = 'STRU'.
+    vl_type = 'TABL'.
+  ENDIF.
+  SELECT SINGLE * FROM tadir INTO wal_tadir
+    WHERE pgmid = 'R3TR' AND object = vl_type AND obj_name = iv_name.
+  IF sy-subrc <> 0 AND vl_type = 'PROG'.
+    "Resolve includes without their own TADIR entry to the owning object.
+    wal_entry-pgmid = 'LIMU'.
+    wal_entry-object = 'REPS'.
+    wal_entry-obj_name = iv_name.
+    CALL FUNCTION 'TR_CHECK_TYPE'
+      EXPORTING wi_e071 = wal_entry
+      IMPORTING we_tadir = wal_tadir
+      EXCEPTIONS OTHERS = 1.
+    IF sy-subrc <> 0.
+      CLEAR wal_tadir.
+    ENDIF.
+  ENDIF.
+  IF wal_tadir-srcsystem IS NOT INITIAL.
+    IF wal_tadir-srcsystem <> 'SAP'.
+      cv_customer = abap_true.
+    ENDIF.
+    RETURN.
+  ENDIF.
+  IF iv_origin IS NOT INITIAL.
+    IF iv_origin <> 'SAP'.
+      cv_customer = abap_true.
+    ENDIF.
+  ELSEIF iv_name CP 'Z*' OR iv_name CP 'Y*'.
+    "Compatibility with older XML lacking original_system.
+    cv_customer = abap_true.
+  ENDIF.
+ENDFORM. " f_is_customer_object
+
+FORM f_filter_customer_objects.
+  DATA vl_customer TYPE abap_bool.
+  LOOP AT tg_alv_object INTO DATA(wal_object).
+    PERFORM f_is_customer_object
+      USING wal_object-object_type wal_object-object_name wal_object-original_system
+      CHANGING vl_customer.
+    IF vl_customer IS INITIAL.
+      DELETE tg_alv_object.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+* Versioned bundle: every component carries its own identity and read error.
+FORM f_export_prog_bundle
+  USING iv_name TYPE tadir-obj_name it_includes TYPE tyt_include
+  CHANGING ct_xml TYPE ty_t_xml cv_warning TYPE abap_bool.
+  DATA: wal_bundle TYPE ty_prog_bundle,
+        wal_part TYPE ty_prog_component,
+        wal_screen TYPE ty_prog_screen,
+        wal_cua TYPE ty_prog_cua,
+        wal_doc TYPE ty_prog_doc,
+        wal_tran TYPE ty_prog_tran,
+        wal_tran_config TYPE ty_prog_tran_config,
+        vl_tran_error TYPE string,
+        vl_added TYPE abap_bool,
+        wal_enho TYPE ty_prog_enho,
+        wal_enhs TYPE ty_prog_enhs,
+        li_spot TYPE REF TO if_enh_spot_tool,
+        li_docu TYPE REF TO if_enh_object_docu,
+        lo_definition TYPE REF TO cl_enh_tool_hook_def,
+        vl_spot_name TYPE enhspotname,
+        tl_programs TYPE SORTED TABLE OF progname WITH UNIQUE KEY table_line,
+        tl_textpool TYPE STANDARD TABLE OF textpool WITH DEFAULT KEY,
+        tl_languages TYPE STANDARD TABLE OF sylangu WITH EMPTY KEY,
+        tl_gui_languages TYPE STANDARD TABLE OF sylangu WITH EMPTY KEY,
+        tl_screens TYPE STANDARD TABLE OF d020s WITH DEFAULT KEY,
+        vl_customer TYPE abap_bool,
+        vl_xml TYPE xstring,
+        vl_base64 TYPE string,
+        vl_enhname TYPE enhname,
+        li_tool TYPE REF TO if_enh_tool,
+        lo_hook TYPE REF TO cl_enh_tool_hook_impl.
+  DATA: lr_screen_titles TYPE REF TO data,
+        vl_title_table TYPE tabname VALUE 'D020T',
+        vl_title_screen TYPE sy-dynnr.
+  FIELD-SYMBOLS: <screen_titles> TYPE STANDARD TABLE,
+                 <screen_title> TYPE any,
+                 <title_number> TYPE any.
+
+  wal_bundle-format = 'PROGRAM_COMPONENTS_1'.
+  wal_bundle-program = iv_name.
+  SELECT SINGLE subc FROM trdir INTO wal_bundle-program_type WHERE name = iv_name.
+  INSERT CONV progname( iv_name ) INTO TABLE tl_programs.
+  LOOP AT it_includes INTO DATA(wal_include).
+    PERFORM f_is_customer_object USING 'PROG' wal_include-include_name space
+      CHANGING vl_customer.
+    IF vl_customer = abap_true.
+      INSERT wal_include-include_name INTO TABLE tl_programs.
+    ENDIF.
+  ENDLOOP.
+
+  LOOP AT tl_programs INTO DATA(vl_program).
+    SELECT DISTINCT language FROM d010tinf INTO TABLE @tl_languages
+      WHERE prog = @vl_program AND r3state = 'A'.
+    LOOP AT tl_languages INTO DATA(vl_language).
+      CLEAR: wal_part, tl_textpool.
+      wal_part-kind = 'TEXTPOOL'.
+      wal_part-name = vl_program.
+      wal_part-language = vl_language.
+      READ TEXTPOOL vl_program INTO tl_textpool LANGUAGE vl_language STATE 'A'.
+      IF sy-subrc = 0.
+        CALL TRANSFORMATION id SOURCE texts = tl_textpool RESULT XML wal_part-content.
+      ELSE.
+        wal_part-error = 'No se pudo leer un textpool registrado en D010TINF.'.
+      ENDIF.
+      APPEND wal_part TO wal_bundle-components.
+    ENDLOOP.
+    SELECT * FROM dokil INTO TABLE @DATA(tl_docs)
+      WHERE id = 'RE' AND object = @vl_program AND dokstate = 'A'.
+    LOOP AT tl_docs INTO DATA(wal_doc_key).
+      CLEAR: wal_part, wal_doc.
+      wal_part-kind = 'DOCU'.
+      wal_part-name = vl_program.
+      wal_part-language = wal_doc_key-langu.
+      wal_doc-info = wal_doc_key.
+      TRY.
+          CALL FUNCTION 'DOCU_READ'
+            EXPORTING id = wal_doc_key-id langu = wal_doc_key-langu
+                      object = wal_doc_key-object typ = wal_doc_key-typ
+                      version = wal_doc_key-version
+            IMPORTING head = wal_doc-head
+            TABLES line = wal_doc-lines
+            EXCEPTIONS error_message = 1 OTHERS = 2.
+          IF sy-subrc <> 0.
+            wal_part-error = 'DOCU_READ no pudo leer la documentacion.'.
+          ELSE.
+            CALL TRANSFORMATION id SOURCE document = wal_doc RESULT XML wal_part-content.
+          ENDIF.
+        CATCH cx_root INTO DATA(lo_error).
+          wal_part-error = lo_error->get_text( ).
+      ENDTRY.
+      APPEND wal_part TO wal_bundle-components.
+    ENDLOOP.
+  ENDLOOP.
+
+  CALL FUNCTION 'RS_SCREEN_LIST'
+    EXPORTING progname = wal_bundle-program dynnr = space
+    TABLES dynpros = tl_screens
+    EXCEPTIONS not_found = 1 error_message = 2 OTHERS = 3.
+  IF sy-subrc > 1.
+    APPEND VALUE #( kind = 'DYNP' name = iv_name error = 'RS_SCREEN_LIST fallo.' )
+      TO wal_bundle-components.
+  ENDIF.
+  LOOP AT tl_screens INTO DATA(wal_screen_key)
+    WHERE type <> 'S' AND type <> 'W' AND type <> 'J' AND dnum IS NOT INITIAL.
+    CLEAR: wal_part, wal_screen.
+    wal_part-kind = 'DYNP'.
+    wal_part-name = wal_screen_key-dnum.
+    TRY.
+        CALL FUNCTION 'RPY_DYNPRO_READ'
+          EXPORTING progname = wal_bundle-program dynnr = wal_screen_key-dnum
+          IMPORTING header = wal_screen-header
+          TABLES containers = wal_screen-containers
+                 fields_to_containers = wal_screen-fields flow_logic = wal_screen-flow
+          EXCEPTIONS error_message = 1 OTHERS = 2.
+        IF sy-subrc <> 0.
+          wal_part-error = 'RPY_DYNPRO_READ fallo.'.
+        ELSE.
+          SELECT * FROM d021t INTO TABLE wal_screen-texts
+            WHERE prog = wal_bundle-program AND dynr = wal_screen_key-dnum.
+          wal_screen-native_header = wal_screen_key.
+          CALL FUNCTION 'RPY_DYNPRO_READ_NATIVE'
+            EXPORTING progname = wal_bundle-program dynnr = wal_screen_key-dnum
+            TABLES fieldlist = wal_screen-native_fields
+            EXCEPTIONS error_message = 1 OTHERS = 2.
+          IF sy-subrc <> 0.
+            wal_part-error = 'No se pudo obtener la representacion nativa del dynpro.'.
+          ENDIF.
+          LOOP AT wal_screen-fields ASSIGNING FIELD-SYMBOL(<screen_field>).
+            ASSIGN COMPONENT 'OUTPUTSTYLE' OF STRUCTURE <screen_field> TO FIELD-SYMBOL(<style>).
+            IF sy-subrc = 0 AND <style> = space.
+              CLEAR <style>.
+            ENDIF.
+          ENDLOOP.
+          CALL TRANSFORMATION id SOURCE screen = wal_screen RESULT XML wal_part-content.
+        ENDIF.
+      CATCH cx_root INTO lo_error.
+        wal_part-error = lo_error->get_text( ).
+    ENDTRY.
+    APPEND wal_part TO wal_bundle-components.
+  ENDLOOP.
+
+  "Screen-title layouts differ across releases; resolve the key dynamically.
+  CLEAR wal_part.
+  wal_part-kind = 'DYNTEXT'.
+  wal_part-name = iv_name.
+  TRY.
+      CREATE DATA lr_screen_titles TYPE STANDARD TABLE OF (vl_title_table).
+      ASSIGN lr_screen_titles->* TO <screen_titles>.
+      SELECT * FROM (vl_title_table) INTO TABLE <screen_titles> WHERE prog = iv_name.
+      LOOP AT <screen_titles> ASSIGNING <screen_title>.
+        ASSIGN COMPONENT 'DYNR' OF STRUCTURE <screen_title> TO <title_number>.
+        IF sy-subrc <> 0.
+          ASSIGN COMPONENT 'DNUM' OF STRUCTURE <screen_title> TO <title_number>.
+        ENDIF.
+        IF sy-subrc <> 0.
+          wal_part-error = 'Clave de numero de dynpro desconocida en D020T.'.
+          EXIT.
+        ENDIF.
+        vl_title_screen = <title_number>.
+        READ TABLE wal_bundle-components TRANSPORTING NO FIELDS
+          WITH KEY kind = 'DYNP' name = vl_title_screen.
+        IF sy-subrc <> 0.
+          DELETE <screen_titles>.
+        ENDIF.
+      ENDLOOP.
+      IF <screen_titles> IS NOT INITIAL AND wal_part-error IS INITIAL.
+        CALL TRANSFORMATION id SOURCE titles = <screen_titles> RESULT XML wal_part-content.
+      ENDIF.
+    CATCH cx_root INTO lo_error.
+      wal_part-error = lo_error->get_text( ).
+  ENDTRY.
+  IF wal_part-content IS NOT INITIAL OR wal_part-error IS NOT INITIAL.
+    APPEND wal_part TO wal_bundle-components.
+  ENDIF.
+
+  "Fetch only maintained GUI languages; NOT_FOUND is normal for unused languages.
+  SELECT spras FROM t002 INTO TABLE @tl_gui_languages.
+  LOOP AT tl_gui_languages INTO DATA(vl_gui_language).
+    CLEAR: wal_part, wal_cua.
+    wal_part-kind = 'CUAD'.
+    wal_part-name = iv_name.
+    wal_part-language = vl_gui_language.
+    TRY.
+        CALL FUNCTION 'RS_CUA_INTERNAL_FETCH'
+          EXPORTING program = wal_bundle-program language = vl_gui_language state = 'A'
+          IMPORTING adm = wal_cua-adm
+          TABLES sta = wal_cua-sta fun = wal_cua-fun men = wal_cua-men
+                 mtx = wal_cua-mtx act = wal_cua-act but = wal_cua-but
+                 pfk = wal_cua-pfk set = wal_cua-set doc = wal_cua-doc
+                 tit = wal_cua-tit biv = wal_cua-biv
+          EXCEPTIONS not_found = 1 error_message = 2 OTHERS = 3.
+        IF sy-subrc = 1.
+          CONTINUE.
+        ELSEIF sy-subrc <> 0.
+          wal_part-error = 'RS_CUA_INTERNAL_FETCH fallo.'.
+        ELSE.
+          CALL TRANSFORMATION id SOURCE cua = wal_cua RESULT XML wal_part-content.
+        ENDIF.
+      CATCH cx_root INTO lo_error.
+        wal_part-error = lo_error->get_text( ).
+    ENDTRY.
+    APPEND wal_part TO wal_bundle-components.
+  ENDLOOP.
+
+  SELECT * FROM tstc INTO TABLE @DATA(tl_transactions) WHERE pgmna = @iv_name.
+  "Find customer parameter/variant transactions that call a selected transaction.
+  SELECT c~* FROM tstc AS c INNER JOIN tadir AS t ON t~obj_name = c~tcode
+    INTO TABLE @DATA(tl_indirect_transactions)
+    WHERE t~pgmid = 'R3TR' AND t~object = 'TRAN'
+      AND t~srcsystem <> 'SAP' AND t~srcsystem <> @space.
+  DO.
+    CLEAR vl_added.
+    LOOP AT tl_indirect_transactions INTO DATA(wal_indirect).
+      READ TABLE tl_transactions TRANSPORTING NO FIELDS WITH KEY tcode = wal_indirect-tcode.
+      IF sy-subrc = 0.
+        CONTINUE.
+      ENDIF.
+      CLEAR wal_tran.
+      SELECT SINGLE * FROM tstcp INTO wal_tran-parameters WHERE tcode = wal_indirect-tcode.
+      PERFORM f_program_transaction_config USING wal_indirect wal_tran-parameters
+        CHANGING wal_tran_config vl_tran_error.
+      IF vl_tran_error IS NOT INITIAL OR wal_tran_config-called IS INITIAL.
+        CONTINUE.
+      ENDIF.
+      READ TABLE tl_transactions TRANSPORTING NO FIELDS WITH KEY tcode = wal_tran_config-called.
+      IF sy-subrc = 0.
+        APPEND wal_indirect TO tl_transactions.
+        vl_added = abap_true.
+      ENDIF.
+    ENDLOOP.
+    IF vl_added IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+  LOOP AT tl_transactions INTO DATA(wal_tstc).
+    PERFORM f_is_customer_object USING 'TRAN' wal_tstc-tcode space CHANGING vl_customer.
+    IF vl_customer IS INITIAL.
+      CONTINUE.
+    ENDIF.
+    CLEAR: wal_part, wal_tran.
+    wal_part-kind = 'TRAN'.
+    wal_part-name = wal_tstc-tcode.
+    SELECT SINGLE srcsystem FROM tadir INTO wal_part-original_system
+      WHERE pgmid = 'R3TR' AND object = 'TRAN' AND obj_name = wal_part-name.
+    wal_tran-definition = wal_tstc.
+    SELECT SINGLE * FROM tstcc INTO wal_tran-gui WHERE tcode = wal_tstc-tcode.
+    SELECT SINGLE * FROM tstcp INTO wal_tran-parameters WHERE tcode = wal_tstc-tcode.
+    SELECT * FROM tstct INTO TABLE wal_tran-texts WHERE tcode = wal_tstc-tcode.
+    SELECT * FROM tstca INTO TABLE wal_tran-auth WHERE tcode = wal_tstc-tcode.
+    CALL TRANSFORMATION id SOURCE transaction = wal_tran RESULT XML wal_part-content.
+    APPEND wal_part TO wal_bundle-components.
+  ENDLOOP.
+
+  "Definitions precede implementations so source enhancement points can be restored.
+  SELECT obj_name, srcsystem FROM tadir INTO TABLE @DATA(tl_spots)
+    WHERE pgmid = 'R3TR' AND object = 'ENHS' AND srcsystem <> 'SAP' AND srcsystem <> @space.
+  LOOP AT tl_spots INTO DATA(wal_spot_key).
+    CLEAR: wal_enhs, wal_part, li_spot, lo_definition.
+    TRY.
+        vl_spot_name = wal_spot_key-obj_name.
+        li_spot = cl_enh_factory=>get_enhancement_spot( spot_name = vl_spot_name run_dark = abap_true ).
+        IF li_spot->get_tool( ) <> cl_enh_tool_hook_def=>tool_type.
+          CONTINUE.
+        ENDIF.
+        lo_definition ?= li_spot.
+        lo_definition->get_original_object(
+          IMPORTING pgmid = wal_enhs-pgmid obj_name = wal_enhs-obj_name
+                    obj_type = wal_enhs-obj_type main_type = wal_enhs-main_type
+                    main_name = wal_enhs-main_name program = wal_enhs-program ).
+        READ TABLE tl_programs TRANSPORTING NO FIELDS WITH TABLE KEY table_line = wal_enhs-program.
+        IF sy-subrc <> 0.
+          CONTINUE.
+        ENDIF.
+        li_docu ?= li_spot.
+        wal_enhs-shorttext = li_docu->get_shorttext( ).
+        wal_enhs-definitions = lo_definition->get_hook_defs( ).
+        wal_part-kind = 'ENHS'.
+        wal_part-name = wal_spot_key-obj_name.
+        wal_part-original_system = wal_spot_key-srcsystem.
+        CALL TRANSFORMATION id SOURCE spot = wal_enhs RESULT XML wal_part-content.
+        APPEND wal_part TO wal_bundle-components.
+      CATCH cx_root INTO lo_error.
+        APPEND VALUE #( kind = 'DISCOVERY' name = wal_spot_key-obj_name
+                        error = lo_error->get_text( ) ) TO wal_bundle-components.
+    ENDTRY.
+  ENDLOOP.
+  "Use Enhancement Framework ownership, not ENHO name prefixes or source regex.
+  SELECT obj_name, srcsystem FROM tadir INTO TABLE @DATA(tl_enhancements)
+    WHERE pgmid = 'R3TR' AND object = 'ENHO' AND srcsystem <> 'SAP' AND srcsystem <> @space.
+  LOOP AT tl_enhancements INTO DATA(wal_enh_key).
+    CLEAR: wal_enho, wal_part, lo_hook, li_tool.
+    TRY.
+        vl_enhname = wal_enh_key-obj_name.
+        li_tool = cl_enh_factory=>get_enhancement(
+          enhancement_id = vl_enhname run_dark = abap_true bypassing_buffer = abap_true ).
+        IF li_tool->get_tool( ) <> cl_enh_tool_hook_impl=>tooltype.
+          CONTINUE.
+        ENDIF.
+        lo_hook ?= li_tool.
+        lo_hook->get_original_object(
+          IMPORTING pgmid = wal_enho-original-pgmid obj_name = wal_enho-original-org_obj_name
+                    obj_type = wal_enho-original-org_obj_type
+                    main_type = wal_enho-original-org_main_type
+                    main_name = wal_enho-original-org_main_name
+                    program = wal_enho-original-programname ).
+        READ TABLE tl_programs TRANSPORTING NO FIELDS
+          WITH TABLE KEY table_line = wal_enho-original-programname.
+        IF sy-subrc <> 0.
+          CONTINUE.
+        ENDIF.
+        wal_part-kind = 'ENHO'.
+        wal_part-name = wal_enh_key-obj_name.
+        wal_part-original_system = wal_enh_key-srcsystem.
+        wal_enho-shorttext = lo_hook->if_enh_object_docu~get_shorttext( ).
+        wal_enho-hooks = lo_hook->get_hook_impls( ).
+        SELECT SINGLE subc FROM trdir INTO @DATA(vl_enh_subc)
+          WHERE name = @wal_enho-original-programname.
+        wal_enho-original-include_bound = xsdbool( vl_enh_subc = 'I' ).
+        LOOP AT wal_enho-hooks ASSIGNING FIELD-SYMBOL(<hook>).
+          CLEAR: <hook>-extid, <hook>-id.
+        ENDLOOP.
+        CALL TRANSFORMATION id SOURCE enhancement = wal_enho RESULT XML wal_part-content.
+        APPEND wal_part TO wal_bundle-components.
+      CATCH cx_root INTO lo_error.
+        "A failed lookup cannot establish association: disclose discovery gap.
+        wal_part-kind = 'DISCOVERY'.
+        wal_part-name = wal_enh_key-obj_name.
+        wal_part-error = lo_error->get_text( ).
+        APPEND wal_part TO wal_bundle-components.
+    ENDTRY.
+  ENDLOOP.
+  LOOP AT wal_bundle-components TRANSPORTING NO FIELDS WHERE error IS NOT INITIAL.
+    cv_warning = abap_true.
+    EXIT.
+  ENDLOOP.
+  CALL TRANSFORMATION id SOURCE bundle = wal_bundle RESULT XML vl_xml.
+  PERFORM f_xstring_to_base64 USING vl_xml CHANGING vl_base64.
+  APPEND '      <program_payload encoding="base64" transformation="id" format="PROGRAM_COMPONENTS_1">' TO ct_xml.
+  APPEND vl_base64 TO ct_xml.
+  APPEND '      </program_payload>' TO ct_xml.
+ENDFORM.
+
+FORM f_program_transaction_config
+  USING is_definition TYPE tstc is_parameters TYPE tstcp
+  CHANGING cs_config TYPE ty_prog_tran_config cv_error TYPE string.
+  CONSTANTS: lc_report TYPE x VALUE '80', lc_parameter TYPE x VALUE '02', lc_oo TYPE x VALUE '08'.
+  DATA: vl_parameters TYPE string,
+        vl_token TYPE string,
+        vl_rest TYPE string,
+        vl_offset TYPE i,
+        wal_value TYPE rsparam.
+  CLEAR: cs_config, cv_error.
+  vl_parameters = is_parameters-param.
+  IF is_definition-cinfo O lc_oo.
+    cv_error = 'Transaccion OO: requiere el objeto CLAS y configuracion SE93; no es una transaccion de programa.'.
+    RETURN.
+  ELSEIF is_definition-cinfo O lc_report.
+    cs_config-kind = 'R'.
+    cs_config-variant = vl_parameters.
+    RETURN.
+  ELSEIF is_definition-cinfo O lc_parameter.
+    IF vl_parameters CP '@*'.
+      cs_config-kind = 'V'.
+      IF vl_parameters CP '@@*'.
+        cs_config-independent = abap_true.
+        vl_parameters = substring( val = vl_parameters off = 2 ).
+      ELSE.
+        vl_parameters = substring( val = vl_parameters off = 1 ).
+      ENDIF.
+      SPLIT vl_parameters AT space INTO cs_config-called cs_config-variant.
+      IF cs_config-called IS INITIAL OR cs_config-variant IS INITIAL.
+        cv_error = 'Definicion de transaccion con variante incompleta.'.
+      ENDIF.
+      RETURN.
+    ELSEIF vl_parameters CP '/?*'.
+      cs_config-kind = 'P'.
+      cs_config-skip = xsdbool( vl_parameters+1(1) = '*' ).
+      vl_parameters = substring( val = vl_parameters off = 2 ).
+      SPLIT vl_parameters AT space INTO cs_config-called vl_rest.
+      vl_parameters = vl_rest.
+    ELSE.
+      cv_error = 'Formato TSTCP desconocido para transaccion de parametros.'.
+      RETURN.
+    ENDIF.
+  ELSE.
+    cs_config-kind = 'D'.
+    RETURN.
+  ENDIF.
+  IF cs_config-called IS INITIAL.
+    cv_error = 'Falta transaccion llamada.'.
+    RETURN.
+  ENDIF.
+  WHILE vl_parameters IS NOT INITIAL.
+    CLEAR: wal_value, vl_token, vl_rest.
+    SPLIT vl_parameters AT ';' INTO vl_token vl_rest.
+    vl_parameters = vl_rest.
+    FIND FIRST OCCURRENCE OF '=' IN vl_token MATCH OFFSET vl_offset.
+    IF sy-subrc <> 0 OR vl_offset = 0.
+      cv_error = 'Parametro TSTCP sin nombre o separador igual.'.
+      RETURN.
+    ENDIF.
+    wal_value-field = vl_token(vl_offset).
+    CONDENSE wal_value-field.
+    vl_offset = vl_offset + 1.
+    wal_value-value = substring( val = vl_token off = vl_offset ).
+    APPEND wal_value TO cs_config-values.
+  ENDWHILE.
+ENDFORM.
