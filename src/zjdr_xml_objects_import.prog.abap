@@ -2242,15 +2242,18 @@ FORM f_import_prog
     vl_program_type = wal_bundle-program_type.
   ENDIF.
 
-  vl_program = cs_object-object_name.
+  vl_program = cs_object-target_object_name.
+  IF vl_program IS INITIAL.
+    vl_program = cs_object-object_name.
+  ENDIF.
   SORT tg_source BY object_type object_name include line_number.
   LOOP AT tg_source INTO DATA(wal_source)
     WHERE object_type = cs_object-object_type
       AND object_name = cs_object-object_name.
     APPEND wal_source-source_line TO tl_source.
     AT END OF include.
-      IF wal_source-include = vl_program.
-        PERFORM f_save_inactive_source USING wal_source-include vl_program_type tl_source
+      IF wal_source-include = cs_object-object_name.
+        PERFORM f_save_inactive_source USING vl_program vl_program_type tl_source
           CHANGING cs_object.
       ELSE.
         PERFORM f_save_inactive_source USING wal_source-include 'I' tl_source
@@ -2259,7 +2262,8 @@ FORM f_import_prog
       IF cs_object-import_status = cg_status_err.
         RETURN.
       ENDIF.
-      PERFORM f_register_program_package USING wal_source-include
+      PERFORM f_register_program_package USING COND progname(
+        WHEN wal_source-include = cs_object-object_name THEN vl_program ELSE wal_source-include )
         CHANGING vl_error vl_message.
       IF vl_error = abap_true.
         vl_package_warning = vl_message.
