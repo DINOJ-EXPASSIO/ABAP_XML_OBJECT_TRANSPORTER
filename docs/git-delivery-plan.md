@@ -175,7 +175,7 @@ Tipos ya soportados; solo XML local y tablas internas.
 
 ---
 
-## Commit 4 — Objetos reutilizables frecuentes
+## Commit 4 — Politica de objetos reutilizables frecuentes
 
 **Mensaje del commit**
 
@@ -185,39 +185,37 @@ feat(objects): transport messages locks and program variants dependencies
 
 **Tarea**
 
-Ampliar la cobertura para que programas trasladados puedan ejecutarse con sus artefactos propios frecuentes.
+Declarar de forma explicita los objetos reutilizables que quedan fuera del alcance actual y validar las variantes de transaccion como prerequisito.
 
 **Especificacion**
 
-- Agregar `MSAG` y textos de clase de mensajes.
-- Agregar `ENQU` solo si existe una API probada en el release objetivo.
 - Detectar variantes de transaccion y elegir por tipo una politica explicita: exportar datos soportados o declarar prerequisito externo.
 - Incluir estado y dependencias en XML y ALV.
-- Habilitar cada tipo despues de pruebas SAP de ida y vuelta.
+- Mantener `MSAG` y `ENQU` como no soportados por decision funcional actual.
 
 **Puntos a realizar**
 
-- Implementar primero `MSAG`.
-- No escribir tablas SAP directamente si existe una API apta.
-- Añadir casos: programa con mensajes, lock object y variante.
+- Documentar `MSAG` y `ENQU` como prerequisitos externos cuando un programa los referencia.
+- Añadir casos de variante existente y variante faltante.
+- No escribir tablas SAP directamente para objetos que no tienen adaptador certificado.
 
 **Alcance**
 
-Objetos propios recurrentes en ABAP clasico.
+Variantes de transaccion y declaracion de prerequisitos externos.
 
 **Limites**
 
+- `MSAG` y `ENQU` no se implementan en esta entrega, por decision del proyecto.
 - No incluye datos, customizing ni configuracion de negocio.
-- No cubre todos los artefactos SAP.
-- Variantes sensibles pueden requerir mantenimiento manual.
+- Variantes sensibles requieren mantenimiento manual en destino.
 
 **Se agrega**
 
-- Cobertura `MSAG` y, si se certifica, `ENQU`; politica de variantes.
+- Politica de variantes y declaracion visible de prerequisitos `MSAG`/`ENQU`.
 
 **Se quita**
 
-- Fallos silenciosos por clases de mensajes o locks propios ausentes.
+- Suposicion de que clases de mensajes, locks o variantes existen en destino.
 
 ---
 
