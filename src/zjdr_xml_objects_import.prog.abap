@@ -2350,8 +2350,8 @@ FORM f_import_tabl
 ENDFORM. " f_import_tabl
 
 FORM f_map_ddic_reference
-  USING iv_type TYPE string iv_source TYPE tadir-obj_name
-  CHANGING cv_target TYPE tadir-obj_name.
+  USING iv_type TYPE string iv_source TYPE any
+  CHANGING cv_target TYPE any.
   READ TABLE tg_objects INTO DATA(wal_mapping)
     WITH KEY object_type = iv_type source_object_name = iv_source.
   IF sy-subrc = 0 AND wal_mapping-target_object_name IS NOT INITIAL.

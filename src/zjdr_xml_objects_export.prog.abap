@@ -62,8 +62,8 @@ TYPES:
   ty_t_source  TYPE STANDARD TABLE OF string WITH EMPTY KEY,
   ty_t_xml     TYPE STANDARD TABLE OF string WITH EMPTY KEY,
   tyt_tadir    TYPE STANDARD TABLE OF tadir WITH EMPTY KEY,
-  tyt_progname TYPE STANDARD TABLE OF progname WITH EMPTY KEY,
-  tyt_string   TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+  tyt_progname TYPE STANDARD TABLE OF progname WITH DEFAULT KEY,
+  tyt_string   TYPE STANDARD TABLE OF string WITH DEFAULT KEY.
 
 TYPES:
   BEGIN OF ty_alv_object,
@@ -106,7 +106,7 @@ TYPES:
   END OF ty_include.
 
 TYPES:
-  tyt_include TYPE STANDARD TABLE OF ty_include WITH EMPTY KEY.
+  tyt_include TYPE STANDARD TABLE OF ty_include WITH DEFAULT KEY.
 
 TYPES:
   BEGIN OF ty_f4_object,
@@ -2915,12 +2915,15 @@ FORM f_expand_program_dependencies.
   DATA: vl_index TYPE i VALUE 1,
         wal_parent TYPE ty_alv_object,
         tl_names TYPE tyt_string,
+        tl_object_names TYPE STANDARD TABLE OF tadir-obj_name WITH DEFAULT KEY,
+        tl_function_names TYPE STANDARD TABLE OF tfdir-funcname WITH DEFAULT KEY,
         tl_tadir TYPE tyt_tadir,
-        tl_function_pools TYPE tyt_string,
-        tl_groups TYPE tyt_string,
+        tl_function_pools TYPE STANDARD TABLE OF tfdir-pname WITH DEFAULT KEY,
+        tl_groups TYPE STANDARD TABLE OF tadir-obj_name WITH DEFAULT KEY,
         tl_group_tadir TYPE tyt_tadir,
         wal_dependency TYPE ty_alv_object,
         vl_scan_program TYPE progname,
+        vl_object_type TYPE string,
         vl_cycle TYPE abap_bool,
         vl_text TYPE string,
         vl_date TYPE sy-datum.
@@ -2939,21 +2942,26 @@ FORM f_expand_program_dependencies.
       ENDCASE.
     ENDIF.
     IF vl_scan_program IS NOT INITIAL.
-      CLEAR: tl_names, tl_tadir, tl_function_pools, tl_groups, tl_group_tadir.
+      CLEAR: tl_names, tl_object_names, tl_function_names, tl_tadir,
+             tl_function_pools, tl_groups, tl_group_tadir.
       PERFORM f_collect_prog_dep_names
         USING vl_scan_program CHANGING tl_names.
       IF tl_names IS NOT INITIAL.
+        LOOP AT tl_names INTO DATA(vl_dependency_name).
+          APPEND vl_dependency_name TO tl_object_names.
+          APPEND vl_dependency_name TO tl_function_names.
+        ENDLOOP.
         SELECT * FROM tadir INTO TABLE @tl_tadir
-          FOR ALL ENTRIES IN @tl_names
+          FOR ALL ENTRIES IN @tl_object_names
           WHERE pgmid = 'R3TR'
-            AND obj_name = @tl_names-table_line
+            AND obj_name = @tl_object_names-table_line
             AND srcsystem <> 'SAP'
             AND srcsystem <> @space
             AND genflag <> 'X'
             AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP', 'MSAG', 'ENQU').
         SELECT pname FROM tfdir INTO TABLE @tl_function_pools
-          FOR ALL ENTRIES IN @tl_names
-          WHERE funcname = @tl_names-table_line.
+          FOR ALL ENTRIES IN @tl_function_names
+          WHERE funcname = @tl_function_names-table_line.
         SORT tl_function_pools.
         DELETE ADJACENT DUPLICATES FROM tl_function_pools.
         LOOP AT tl_function_pools INTO DATA(vl_pool).
@@ -2971,6 +2979,7 @@ FORM f_expand_program_dependencies.
         ENDIF.
       ENDIF.
       LOOP AT tl_tadir INTO DATA(wal_tadir).
+        vl_object_type = wal_tadir-object.
         READ TABLE tg_dependencies TRANSPORTING NO FIELDS
           WITH KEY parent_type = wal_parent-object_type
                    parent_name = wal_parent-object_name
@@ -2987,7 +2996,7 @@ FORM f_expand_program_dependencies.
         IF sy-subrc = 0.
           PERFORM f_dependency_creates_cycle
             USING wal_parent-object_type wal_parent-object_name
-                  wal_tadir-object wal_tadir-obj_name
+                  vl_object_type wal_tadir-obj_name
             CHANGING vl_cycle.
           IF vl_cycle = abap_true.
             wal_parent-light = cg_status_warning.
@@ -2997,7 +3006,7 @@ FORM f_expand_program_dependencies.
           CONTINUE.
         ENDIF.
         CLEAR: wal_dependency, vl_text, vl_date.
-        PERFORM f_get_object_text USING wal_tadir-object wal_tadir-obj_name
+        PERFORM f_get_object_text USING vl_object_type wal_tadir-obj_name
           CHANGING vl_text vl_date.
         wal_dependency-light = cg_status_not_exported.
         wal_dependency-package = wal_tadir-devclass.
