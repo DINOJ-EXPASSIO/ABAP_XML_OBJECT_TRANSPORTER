@@ -2012,6 +2012,8 @@ FORM f_import_dtel
       IF cs_object-target_object_name IS NOT INITIAL.
         wal_dd04v-rollname = cs_object-target_object_name.
       ENDIF.
+      PERFORM f_map_ddic_reference USING 'DOMA' wal_dd04v-domname
+        CHANGING wal_dd04v-domname.
 
       CALL FUNCTION 'DDIF_DTEL_PUT'
         EXPORTING
@@ -2093,6 +2095,9 @@ FORM f_import_tabl
       IF cs_object-target_object_name IS NOT INITIAL.
         wal_dd02v-tabname = cs_object-target_object_name.
       ENDIF.
+      LOOP AT tl_dd03p ASSIGNING FIELD-SYMBOL(<field>). 
+        PERFORM f_map_ddic_reference USING 'DTEL' <field>-rollname CHANGING <field>-rollname.
+      ENDLOOP.
 
       CALL FUNCTION 'DDIF_TABL_PUT'
         EXPORTING
@@ -2122,6 +2127,16 @@ FORM f_import_tabl
   ENDTRY.
 
 ENDFORM. " f_import_tabl
+
+FORM f_map_ddic_reference
+  USING iv_type TYPE string iv_source TYPE tadir-obj_name
+  CHANGING cv_target TYPE tadir-obj_name.
+  READ TABLE tg_objects INTO DATA(wal_mapping)
+    WITH KEY object_type = iv_type source_object_name = iv_source.
+  IF sy-subrc = 0 AND wal_mapping-target_object_name IS NOT INITIAL.
+    cv_target = wal_mapping-target_object_name.
+  ENDIF.
+ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& FORM f_import_shlp
