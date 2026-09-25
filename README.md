@@ -37,12 +37,26 @@ y la exclusión de objetos generados; los objetos inexistentes en TADIR no se
 exportan. Las selecciones IDoc conservan sus criterios específicos.
 El XML registra el filtro de OT en `transport_selection`.
 
-El formato portable actual es `sap_package_export` versión `1.2`. El
+El formato portable actual es `sap_package_export` versión `1.3`. El
 exportador siempre incluye `header/package`, que el importador usa como
 package destino por defecto; `p_pack` permite reemplazarlo.
-El importador sigue leyendo XML `1.1`. Los importadores anteriores rechazan
-`1.2`, evitando que ignoren los componentes nuevos y declaren una importación
+El importador sigue leyendo XML `1.1` y `1.2`. Los importadores anteriores rechazan
+`1.3`, evitando que ignoren las relaciones y los mapeos y declaren una importación
 completa de un programa del que solo leyeron el fuente.
+
+La versión `1.3` descubre referencias estáticas desde programas, clases,
+interfaces y grupos de funciones. Las muestra como dependencias seleccionables
+y conserva todas las relaciones padre-hijo en el XML. `MSAG` y `ENQU` se
+identifican como prerequisitos externos: no se crean. El importador comprueba
+los prerequisitos elegidos, detecta ciclos y ordena primero las dependencias.
+
+La columna **Nombre destino** permite preparar un mapeo por objeto en el
+exportador y modificarlo antes de importar. El nombre de origen permanece
+inmutable para validar payloads y trazabilidad. Se propagan nombres en payloads
+DDIC, definiciones y fuentes OO, grupos de funciones, programas y sus
+componentes. En fuente ABAP solo se sustituyen identificadores completos fuera
+de comentarios y literales; referencias dinámicas construidas en ejecución
+requieren ajuste manual.
 
 La importación guarda los programas, sus includes y los fuentes de grupos de
 funciones con `STATE 'I'`. La creación de módulos nuevos usa

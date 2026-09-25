@@ -1,5 +1,15 @@
 # Plan de entregables y commits Git
 
+## Estado de ejecucion
+
+- Commits 1 a 5: completados.
+- Commit 6: no ejecutado por instruccion expresa de no realizar tests en esta
+  entrega; las pruebas SAP siguen siendo manuales y estan documentadas.
+- Commit 7: completado en los dos reportes autonomos, incluida seleccion de
+  dependencias, grafo XML, prevalidacion y mapeo origen-destino.
+- Arquitectura final: exactamente dos objetos ejecutables SAP y un XML local;
+  la documentacion y herramientas del repositorio no agregan objetos SAP.
+
 ## Decisiones de arquitectura
 
 ### Dos programas ABAP autonomos
@@ -330,7 +340,9 @@ Una version nueva y compatible del XML con relaciones de objetos y mapeos opcion
 **Especificacion**
 
 - Agregar al manifiesto una identidad inmutable de origen: `source_object_type` y `source_object_name`.
-- Agregar una seccion opcional `target_mapping` con tipo/nombre origen y tipo/nombre destino.
+- Agregar por objeto `source_object_type`, `source_object_name` y el nodo
+  opcional `target_object_name`; juntos forman el mapeo origen-destino sin
+  duplicar el payload.
 - Mostrar en ambos ALV las columnas `Objeto origen`, `Objeto destino`, `Padre`, `Tipo de relacion` y `Incluir`.
 - Permitir editar el objeto destino solo en el importador; en el exportador se podra proponer y guardar el mapeo como plantilla, sin cambiar el payload exportado.
 - Permitir seleccionar o deseleccionar cualquier objeto de repositorio incluido en el manifiesto.
@@ -345,7 +357,9 @@ Una version nueva y compatible del XML con relaciones de objetos y mapeos opcion
 - Crear tipos internos `ty_object_identity`, `ty_object_relation` y `ty_name_mapping`, duplicados en ambos reportes mientras permanezcan autonomos.
 - Extender el exportador para guardar raiz, padre y relacion por objeto en XML.
 - Extender el importador para cargar, revisar y editar el mapeo antes de ejecutar.
-- Resolver referencias usando el mapeo antes de cada adaptador de importacion, nunca con reemplazo global de texto ABAP/XML.
+- Resolver referencias DDIC en campos conocidos y referencias de fuente como
+  identificadores completos fuera de comentarios y literales; nunca modificar
+  el XML bruto, comentarios ni literales ABAP.
 - Mantener el nombre original para logs, hashes, validacion de payload y trazabilidad.
 - Bloquear un programa si se intenta renombrar solo un componente que debe compartir identidad con su padre.
 - Añadir modo simulacion que muestre el plan de nombres y todas las referencias que se reescribiran.
@@ -358,7 +372,8 @@ Seleccion individual de objetos de repositorio y renombrado de objetos propios c
 
 - El usuario ya puede seleccionar filas individuales en los ALV actuales para exportar e importar; este commit amplía esa seleccion a objetos descubiertos como dependencias.
 - Actualmente no hay un campo ALV que identifique de forma general `raiz/dependencia/padre`; los includes y componentes se asocian internamente al programa mediante sus payloads, pero no son seleccionables por separado.
-- No se permite reemplazo textual global de nombres: podria modificar comentarios, literales, SQL dinamico o referencias no relacionadas.
+- No se permite reemplazo textual indiscriminado: comentarios, literales,
+  coincidencias parciales y XML bruto quedan intactos.
 - No se renombra automaticamente objetos SAP, referencias dinamicas, objetos sin adaptador ni componentes cuyo nombre este generado por SAP.
 - Un objeto renombrado puede requerir ajustes manuales de codigo cuando la referencia no sea analizable.
 
