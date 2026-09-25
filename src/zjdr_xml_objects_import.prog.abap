@@ -112,6 +112,16 @@ TYPES: BEGIN OF ty_import_object,
 
 TYPES: tyt_import_object TYPE STANDARD TABLE OF ty_import_object WITH EMPTY KEY.
 
+TYPES: BEGIN OF ty_dependency_ref,
+         parent_type TYPE string,
+         parent_name TYPE tadir-obj_name,
+         object_type TYPE string,
+         object_name TYPE tadir-obj_name,
+         included TYPE abap_bool,
+         source_type TYPE string,
+       END OF ty_dependency_ref.
+TYPES tyt_dependency_ref TYPE STANDARD TABLE OF ty_dependency_ref WITH EMPTY KEY.
+
 TYPES: BEGIN OF ty_object_payload,
          object_type TYPE string,
          object_name TYPE tadir-obj_name,
@@ -257,6 +267,7 @@ DATA:
   tg_objects    TYPE tyt_import_object,
   tg_payloads   TYPE tyt_object_payload,
   tg_source     TYPE tyt_source_line,
+  tg_dependencies TYPE tyt_dependency_ref,
   tg_log        TYPE tyt_import_log,
   vg_xml_string TYPE string,
   vg_input_version TYPE string,
@@ -556,7 +567,7 @@ FORM f_parse_xml.
         vl_root_name      TYPE string,
         vl_version        TYPE string.
 
-  CLEAR: wag_header, tg_objects, tg_payloads, tg_source, tg_log.
+  CLEAR: wag_header, tg_objects, tg_payloads, tg_source, tg_dependencies, tg_log.
 
   lo_ixml           = cl_ixml=>create( ).
   lo_document       = lo_ixml->create_document( ).
@@ -742,6 +753,8 @@ FORM f_parse_object
     CHANGING wal_object-source_object_type.
   PERFORM f_get_child_value USING io_object_node 'source_object_name'
     CHANGING wal_object-source_object_name.
+  PERFORM f_get_child_value USING io_object_node 'target_object_name'
+    CHANGING wal_object-target_object_name.
   PERFORM f_get_child_value USING io_object_node 'relationship'
     CHANGING wal_object-relationship.
   PERFORM f_get_child_value USING io_object_node 'parent_type'
@@ -757,7 +770,9 @@ FORM f_parse_object
   IF wal_object-source_object_name IS INITIAL.
     wal_object-source_object_name = wal_object-object_name.
   ENDIF.
-  wal_object-target_object_name = wal_object-object_name.
+  IF wal_object-target_object_name IS INITIAL.
+    wal_object-target_object_name = wal_object-object_name.
+  ENDIF.
 
   PERFORM f_get_child_value USING io_object_node 'original_system'
     CHANGING wal_object-original_system.
@@ -785,8 +800,44 @@ FORM f_parse_object
 
   PERFORM f_collect_payloads USING io_object_node wal_object.
   PERFORM f_collect_source USING io_object_node wal_object.
+  PERFORM f_collect_dependencies USING io_object_node wal_object.
 
 ENDFORM. " f_parse_object
+
+FORM f_collect_dependencies
+  USING io_object_node TYPE REF TO if_ixml_node
+        is_object TYPE ty_import_object.
+  DATA: lo_child TYPE REF TO if_ixml_node,
+        lo_dependency TYPE REF TO if_ixml_node,
+        wal_dependency TYPE ty_dependency_ref,
+        vl_value TYPE string.
+  lo_child = io_object_node->get_first_child( ).
+  WHILE lo_child IS BOUND.
+    IF lo_child->get_name( ) = 'dependencies'.
+      lo_dependency = lo_child->get_first_child( ).
+      WHILE lo_dependency IS BOUND.
+        IF lo_dependency->get_name( ) = 'dependency'.
+          CLEAR wal_dependency.
+          wal_dependency-parent_type = is_object-object_type.
+          wal_dependency-parent_name = is_object-object_name.
+          PERFORM f_get_attribute_value USING lo_dependency 'type'
+            CHANGING wal_dependency-object_type.
+          PERFORM f_get_attribute_value USING lo_dependency 'name'
+            CHANGING vl_value.
+          wal_dependency-object_name = vl_value.
+          PERFORM f_get_attribute_value USING lo_dependency 'included'
+            CHANGING vl_value.
+          wal_dependency-included = vl_value.
+          PERFORM f_get_attribute_value USING lo_dependency 'source'
+            CHANGING wal_dependency-source_type.
+          APPEND wal_dependency TO tg_dependencies.
+        ENDIF.
+        lo_dependency = lo_dependency->get_next( ).
+      ENDWHILE.
+    ENDIF.
+    lo_child = lo_child->get_next( ).
+  ENDWHILE.
+ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& FORM f_collect_payloads
@@ -1175,7 +1226,14 @@ FORM f_prepare_import_plan.
 
   FIELD-SYMBOLS: <fsl_object> TYPE ty_import_object.
 
+  PERFORM f_validate_name_mappings.
+  PERFORM f_validate_dependency_graph.
+
   LOOP AT tg_objects ASSIGNING <fsl_object>.
+
+    IF <fsl_object>-import_status = cg_status_err.
+      CONTINUE.
+    ENDIF.
 
     PERFORM f_check_object_exists
       CHANGING <fsl_object>.
@@ -1218,9 +1276,149 @@ FORM f_prepare_import_plan.
 
   ENDLOOP.
 
+  PERFORM f_apply_dependency_priorities.
+
   SORT tg_objects BY import_priority object_type object_name.
 
 ENDFORM. " f_prepare_import_plan
+
+FORM f_apply_dependency_priorities.
+  DATA: vl_changed TYPE abap_bool,
+        vl_rounds TYPE i.
+  FIELD-SYMBOLS: <parent> TYPE ty_import_object,
+                 <dependency> TYPE ty_import_object.
+  DO.
+    CLEAR vl_changed.
+    LOOP AT tg_dependencies INTO DATA(wal_dependency).
+      READ TABLE tg_objects ASSIGNING <parent>
+        WITH KEY object_type = wal_dependency-parent_type
+                 object_name = wal_dependency-parent_name.
+      READ TABLE tg_objects ASSIGNING <dependency>
+        WITH KEY object_type = wal_dependency-object_type
+                 object_name = wal_dependency-object_name.
+      IF sy-subrc = 0 AND <parent> IS ASSIGNED AND <dependency> IS ASSIGNED
+        AND <parent>-import_priority <= <dependency>-import_priority.
+        <parent>-import_priority = <dependency>-import_priority + 1.
+        vl_changed = abap_true.
+      ENDIF.
+      UNASSIGN: <parent>, <dependency>.
+    ENDLOOP.
+    vl_rounds = vl_rounds + 1.
+    IF vl_changed IS INITIAL OR vl_rounds > lines( tg_objects ).
+      EXIT.
+    ENDIF.
+  ENDDO.
+ENDFORM.
+
+FORM f_validate_dependency_graph.
+  DATA: tl_closure TYPE tyt_dependency_ref,
+        wal_transitive TYPE ty_dependency_ref,
+        vl_changed TYPE abap_bool,
+        vl_repo_type TYPE tadir-object,
+        vl_existing TYPE tadir-obj_name.
+  FIELD-SYMBOLS <parent> TYPE ty_import_object.
+  tl_closure = tg_dependencies.
+  LOOP AT tg_dependencies INTO DATA(wal_dependency).
+    READ TABLE tg_objects ASSIGNING <parent>
+      WITH KEY object_type = wal_dependency-parent_type
+               object_name = wal_dependency-parent_name.
+    IF sy-subrc <> 0.
+      CONTINUE.
+    ENDIF.
+    READ TABLE tg_objects TRANSPORTING NO FIELDS
+      WITH KEY object_type = wal_dependency-object_type
+               object_name = wal_dependency-object_name.
+    IF sy-subrc = 0.
+      CONTINUE.
+    ENDIF.
+    vl_repo_type = wal_dependency-object_type.
+    IF vl_repo_type = 'STRU'.
+      vl_repo_type = 'TABL'.
+    ENDIF.
+    CLEAR vl_existing.
+    SELECT SINGLE obj_name FROM tadir INTO vl_existing
+      WHERE pgmid = 'R3TR' AND object = vl_repo_type
+        AND obj_name = wal_dependency-object_name.
+    IF sy-subrc <> 0.
+      PERFORM f_set_object_error
+        USING |Dependencia faltante: { wal_dependency-object_type } { wal_dependency-object_name }.|
+        CHANGING <parent>.
+    ENDIF.
+  ENDLOOP.
+  DO.
+    CLEAR vl_changed.
+    LOOP AT tl_closure INTO DATA(wal_left).
+      LOOP AT tl_closure INTO DATA(wal_right)
+        WHERE parent_type = wal_left-object_type
+          AND parent_name = wal_left-object_name.
+        wal_transitive-parent_type = wal_left-parent_type.
+        wal_transitive-parent_name = wal_left-parent_name.
+        wal_transitive-object_type = wal_right-object_type.
+        wal_transitive-object_name = wal_right-object_name.
+        READ TABLE tl_closure TRANSPORTING NO FIELDS
+          WITH KEY parent_type = wal_transitive-parent_type
+                   parent_name = wal_transitive-parent_name
+                   object_type = wal_transitive-object_type
+                   object_name = wal_transitive-object_name.
+        IF sy-subrc <> 0.
+          APPEND wal_transitive TO tl_closure.
+          vl_changed = abap_true.
+        ENDIF.
+      ENDLOOP.
+    ENDLOOP.
+    IF vl_changed IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+  LOOP AT tl_closure INTO DATA(wal_cycle).
+    IF wal_cycle-parent_type <> wal_cycle-object_type
+      OR wal_cycle-parent_name <> wal_cycle-object_name.
+      CONTINUE.
+    ENDIF.
+    READ TABLE tg_objects ASSIGNING <parent>
+      WITH KEY object_type = wal_cycle-parent_type object_name = wal_cycle-parent_name.
+    IF sy-subrc = 0.
+      PERFORM f_set_object_error USING 'Ciclo de dependencias detectado.' CHANGING <parent>.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+FORM f_validate_name_mappings.
+  DATA: vl_customer TYPE abap_bool,
+        vl_count TYPE i.
+  FIELD-SYMBOLS <object> TYPE ty_import_object.
+  LOOP AT tg_objects ASSIGNING <object>.
+    IF <object>-target_object_name IS INITIAL.
+      PERFORM f_set_object_error USING 'El nombre destino no puede estar vacio.'
+        CHANGING <object>.
+      CONTINUE.
+    ENDIF.
+    IF <object>-source_object_type <> <object>-object_type
+      OR <object>-source_object_name <> <object>-object_name.
+      PERFORM f_set_object_error USING 'La identidad de origen no coincide con el objeto XML.'
+        CHANGING <object>.
+      CONTINUE.
+    ENDIF.
+    CLEAR vl_count.
+    LOOP AT tg_objects TRANSPORTING NO FIELDS
+      WHERE object_type = <object>-object_type
+        AND target_object_name = <object>-target_object_name.
+      vl_count = vl_count + 1.
+    ENDLOOP.
+    IF vl_count > 1.
+      PERFORM f_set_object_error USING 'Dos objetos del XML usan el mismo nombre destino.'
+        CHANGING <object>.
+      CONTINUE.
+    ENDIF.
+    PERFORM f_is_customer_object
+      USING <object>-object_type <object>-target_object_name <object>-original_system
+      CHANGING vl_customer.
+    IF vl_customer IS INITIAL.
+      PERFORM f_set_object_error USING 'El nombre destino no identifica un objeto propio permitido.'
+        CHANGING <object>.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& FORM f_validate_object_complete
@@ -1428,7 +1626,7 @@ FORM f_check_object_exists
       SELECT SINGLE area
         FROM tlibg
         INTO vl_area
-        WHERE area EQ cs_object-object_name.
+        WHERE area EQ vl_obj_name.
       IF sy-subrc EQ 0.
         cs_object-exists_dest = abap_true.
       ENDIF.
@@ -1442,7 +1640,7 @@ FORM f_check_object_exists
     INTO vl_obj_name
     WHERE pgmid    EQ vl_pgmid
       AND object   EQ vl_object
-      AND obj_name EQ cs_object-object_name.
+      AND obj_name EQ vl_obj_name.
 
   IF sy-subrc EQ 0.
     cs_object-exists_dest = abap_true.
@@ -1669,18 +1867,6 @@ FORM f_import_selected_objects.
     CLEAR: <fsl_object>-activation_pending, <fsl_object>-oo_prepared.
   ENDLOOP.
 
-  LOOP AT tg_objects ASSIGNING <fsl_object>
-    WHERE selected = abap_true AND import_status = cg_status_ready.
-    IF <fsl_object>-object_type = 'CLAS' OR <fsl_object>-object_type = 'INTF'.
-      PERFORM f_import_oo USING abap_true CHANGING <fsl_object>.
-      IF <fsl_object>-import_status = cg_status_err.
-        vl_imported = vl_imported + 1.
-        PERFORM f_add_log USING <fsl_object>-object_type <fsl_object>-object_name
-          'OO_CREATE' cg_status_err <fsl_object>-import_message.
-      ENDIF.
-    ENDIF.
-  ENDLOOP.
-
   LOOP AT tg_objects ASSIGNING <fsl_object>.
 
     IF <fsl_object>-selected NE abap_true.
@@ -1711,7 +1897,10 @@ FORM f_import_selected_objects.
         PERFORM f_import_ttyp CHANGING <fsl_object>.
 
       WHEN 'CLAS' OR 'INTF'.
-        PERFORM f_import_oo USING abap_false CHANGING <fsl_object>.
+        PERFORM f_import_oo USING abap_true CHANGING <fsl_object>.
+        IF <fsl_object>-import_status <> cg_status_err.
+          PERFORM f_import_oo USING abap_false CHANGING <fsl_object>.
+        ENDIF.
 
       WHEN 'FUGR'.
         PERFORM f_import_fugr CHANGING <fsl_object>.
@@ -1754,19 +1943,36 @@ ENDFORM. " f_import_selected_objects
 FORM f_validate_selected_dependencies.
   FIELD-SYMBOLS: <root> TYPE ty_import_object,
                  <dependency> TYPE ty_import_object.
-  LOOP AT tg_objects ASSIGNING <root>
-    WHERE selected = abap_true AND relationship = 'ROOT'.
-    LOOP AT tg_objects ASSIGNING <dependency>
-      WHERE relationship = 'DEPENDENCY'
-        AND parent_type = <root>-object_type
-        AND parent_name = <root>-object_name.
-      IF <dependency>-selected IS INITIAL.
+  DATA: vl_repo_type TYPE tadir-object,
+        vl_dependency_name TYPE tadir-obj_name,
+        vl_existing TYPE tadir-obj_name.
+  LOOP AT tg_dependencies INTO DATA(wal_dependency).
+    READ TABLE tg_objects ASSIGNING <root>
+      WITH KEY object_type = wal_dependency-parent_type
+               object_name = wal_dependency-parent_name.
+    IF sy-subrc <> 0 OR <root>-selected IS INITIAL.
+      CONTINUE.
+    ENDIF.
+    READ TABLE tg_objects ASSIGNING <dependency>
+      WITH KEY object_type = wal_dependency-object_type
+               object_name = wal_dependency-object_name.
+    IF sy-subrc = 0 AND <dependency>-selected IS INITIAL.
+      vl_repo_type = wal_dependency-object_type.
+      IF vl_repo_type = 'STRU'.
+        vl_repo_type = 'TABL'.
+      ENDIF.
+      vl_dependency_name = <dependency>-target_object_name.
+      CLEAR vl_existing.
+      SELECT SINGLE obj_name FROM tadir INTO vl_existing
+        WHERE pgmid = 'R3TR' AND object = vl_repo_type
+          AND obj_name = vl_dependency_name.
+      IF sy-subrc <> 0.
         <root>-selected = abap_false.
         PERFORM f_set_object_error
-          USING |Falta seleccionar dependencia { <dependency>-object_type } { <dependency>-object_name }.|
+          USING |Dependencia no seleccionada ni existente: { wal_dependency-object_type } { vl_dependency_name }.|
           CHANGING <root>.
       ENDIF.
-    ENDLOOP.
+    ENDIF.
   ENDLOOP.
 ENDFORM.
 
@@ -2096,7 +2302,22 @@ FORM f_import_tabl
         wal_dd02v-tabname = cs_object-target_object_name.
       ENDIF.
       LOOP AT tl_dd03p ASSIGNING FIELD-SYMBOL(<field>). 
+        PERFORM f_set_structure_component USING 'TABNAME' wal_dd02v-tabname CHANGING <field>.
         PERFORM f_map_ddic_reference USING 'DTEL' <field>-rollname CHANGING <field>-rollname.
+      ENDLOOP.
+      LOOP AT tl_dd05m ASSIGNING FIELD-SYMBOL(<dd05>).
+        PERFORM f_set_structure_component USING 'TABNAME' wal_dd02v-tabname CHANGING <dd05>.
+        PERFORM f_map_structure_component USING 'TABL' 'FORTABLE' CHANGING <dd05>.
+      ENDLOOP.
+      LOOP AT tl_dd08v ASSIGNING FIELD-SYMBOL(<dd08>).
+        PERFORM f_set_structure_component USING 'TABNAME' wal_dd02v-tabname CHANGING <dd08>.
+        PERFORM f_map_structure_component USING 'TABL' 'CHECKTABLE' CHANGING <dd08>.
+      ENDLOOP.
+      LOOP AT tl_dd35v ASSIGNING FIELD-SYMBOL(<dd35>).
+        PERFORM f_set_structure_component USING 'TABNAME' wal_dd02v-tabname CHANGING <dd35>.
+      ENDLOOP.
+      LOOP AT tl_dd36m ASSIGNING FIELD-SYMBOL(<dd36>).
+        PERFORM f_set_structure_component USING 'TABNAME' wal_dd02v-tabname CHANGING <dd36>.
       ENDLOOP.
 
       CALL FUNCTION 'DDIF_TABL_PUT'
@@ -2136,6 +2357,150 @@ FORM f_map_ddic_reference
   IF sy-subrc = 0 AND wal_mapping-target_object_name IS NOT INITIAL.
     cv_target = wal_mapping-target_object_name.
   ENDIF.
+ENDFORM.
+
+FORM f_set_structure_component
+  USING iv_component TYPE string iv_value TYPE any
+  CHANGING cs_structure TYPE any.
+  FIELD-SYMBOLS <value> TYPE any.
+  ASSIGN COMPONENT iv_component OF STRUCTURE cs_structure TO <value>.
+  IF sy-subrc = 0.
+    <value> = iv_value.
+  ENDIF.
+ENDFORM.
+
+FORM f_map_structure_component
+  USING iv_type TYPE string iv_component TYPE string
+  CHANGING cs_structure TYPE any.
+  DATA: vl_source TYPE tadir-obj_name,
+        vl_target TYPE tadir-obj_name.
+  FIELD-SYMBOLS <value> TYPE any.
+  ASSIGN COMPONENT iv_component OF STRUCTURE cs_structure TO <value>.
+  IF sy-subrc <> 0 OR <value> IS INITIAL.
+    RETURN.
+  ENDIF.
+  vl_source = <value>.
+  vl_target = vl_source.
+  PERFORM f_map_ddic_reference USING iv_type vl_source CHANGING vl_target.
+  <value> = vl_target.
+ENDFORM.
+
+* Apply explicit repository-object mappings to ABAP identifiers outside
+* comments and character literals. SAP-generated component names are not
+* entries in TG_OBJECTS and are therefore left untouched.
+FORM f_apply_source_mappings
+  CHANGING ct_source TYPE ANY TABLE.
+  DATA: vl_line TYPE string,
+        vl_source TYPE string,
+        vl_target TYPE string.
+  FIELD-SYMBOLS <line> TYPE any.
+  LOOP AT ct_source ASSIGNING <line>.
+    vl_line = <line>.
+    LOOP AT tg_objects INTO DATA(wal_mapping)
+      WHERE target_object_name IS NOT INITIAL.
+      vl_source = wal_mapping-source_object_name.
+      vl_target = wal_mapping-target_object_name.
+      IF vl_source IS INITIAL OR vl_source = vl_target.
+        CONTINUE.
+      ENDIF.
+      PERFORM f_replace_source_identifier USING vl_source vl_target
+        CHANGING vl_line.
+    ENDLOOP.
+    <line> = vl_line.
+  ENDLOOP.
+ENDFORM.
+
+FORM f_replace_source_identifier
+  USING iv_source TYPE string iv_target TYPE string
+  CHANGING cv_line TYPE string.
+  DATA: vl_upper_line TYPE string,
+        vl_upper_source TYPE string,
+        vl_length TYPE i,
+        vl_source_length TYPE i,
+        vl_position TYPE i,
+        vl_after TYPE i,
+        vl_in_literal TYPE abap_bool,
+        vl_before_ok TYPE abap_bool,
+        vl_after_ok TYPE abap_bool,
+        vl_character TYPE c LENGTH 1.
+  IF cv_line IS INITIAL.
+    RETURN.
+  ENDIF.
+  IF cv_line(1) = '*'.
+    RETURN.
+  ENDIF.
+  vl_upper_line = cv_line.
+  vl_upper_source = iv_source.
+  TRANSLATE vl_upper_line TO UPPER CASE.
+  TRANSLATE vl_upper_source TO UPPER CASE.
+  vl_source_length = strlen( iv_source ).
+  vl_length = strlen( cv_line ).
+  WHILE vl_position < vl_length.
+    vl_character = cv_line+vl_position(1).
+    IF vl_character = ''''.
+      IF vl_in_literal = abap_true AND vl_position + 1 < vl_length.
+        vl_after = vl_position + 1.
+        IF cv_line+vl_after(1) = ''''.
+          vl_position = vl_position + 2.
+          CONTINUE.
+        ENDIF.
+      ENDIF.
+      vl_in_literal = xsdbool( vl_in_literal = abap_false ).
+      vl_position = vl_position + 1.
+      CONTINUE.
+    ENDIF.
+    IF vl_in_literal = abap_false AND vl_character = '"'.
+      RETURN.
+    ENDIF.
+    IF vl_in_literal = abap_false
+      AND vl_position + vl_source_length <= vl_length
+      AND vl_upper_line+vl_position(vl_source_length) = vl_upper_source.
+      vl_before_ok = abap_true.
+      IF vl_position > 0.
+        vl_after = vl_position - 1.
+        vl_before_ok = xsdbool( cv_line+vl_after(1) NA 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_/$' ).
+      ENDIF.
+      vl_after = vl_position + vl_source_length.
+      vl_after_ok = abap_true.
+      IF vl_after < vl_length.
+        vl_after_ok = xsdbool( cv_line+vl_after(1) NA 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_/$' ).
+      ENDIF.
+      IF vl_before_ok = abap_true AND vl_after_ok = abap_true.
+        REPLACE SECTION OFFSET vl_position LENGTH vl_source_length OF cv_line WITH iv_target.
+        vl_upper_line = cv_line.
+        TRANSLATE vl_upper_line TO UPPER CASE.
+        vl_length = strlen( cv_line ).
+        vl_position = vl_position + strlen( iv_target ).
+        CONTINUE.
+      ENDIF.
+    ENDIF.
+    vl_position = vl_position + 1.
+  ENDWHILE.
+ENDFORM.
+
+FORM f_apply_fugr_include_mappings
+  USING iv_object_name TYPE tadir-obj_name
+        iv_source_prefix TYPE progname
+        iv_target_prefix TYPE progname
+  CHANGING ct_source TYPE ANY TABLE.
+  DATA: vl_target_include TYPE progname,
+        vl_line TYPE string.
+  FIELD-SYMBOLS <line> TYPE any.
+  LOOP AT tg_source INTO DATA(wal_source)
+    WHERE object_type = 'FUGR' AND object_name = iv_object_name.
+    IF wal_source-include NP |{ iv_source_prefix }*|.
+      CONTINUE.
+    ENDIF.
+    vl_target_include = wal_source-include.
+    REPLACE FIRST OCCURRENCE OF iv_source_prefix IN vl_target_include
+      WITH iv_target_prefix.
+    LOOP AT ct_source ASSIGNING <line>.
+      vl_line = <line>.
+      PERFORM f_replace_source_identifier
+        USING wal_source-include vl_target_include CHANGING vl_line.
+      <line> = vl_line.
+    ENDLOOP.
+  ENDLOOP.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -2187,6 +2552,16 @@ FORM f_import_shlp
       IF cs_object-target_object_name IS NOT INITIAL.
         wal_dd30v-shlpname = cs_object-target_object_name.
       ENDIF.
+      PERFORM f_map_structure_component USING 'TABL' 'SELMETHOD' CHANGING wal_dd30v.
+      LOOP AT tl_dd31v ASSIGNING FIELD-SYMBOL(<dd31>).
+        PERFORM f_set_structure_component USING 'SHLPNAME' wal_dd30v-shlpname CHANGING <dd31>.
+      ENDLOOP.
+      LOOP AT tl_dd32p ASSIGNING FIELD-SYMBOL(<dd32>).
+        PERFORM f_set_structure_component USING 'SHLPNAME' wal_dd30v-shlpname CHANGING <dd32>.
+      ENDLOOP.
+      LOOP AT tl_dd33v ASSIGNING FIELD-SYMBOL(<dd33>).
+        PERFORM f_set_structure_component USING 'SHLPNAME' wal_dd30v-shlpname CHANGING <dd33>.
+      ENDLOOP.
 
       CALL FUNCTION 'DDIF_SHLP_PUT'
         EXPORTING
@@ -2252,6 +2627,7 @@ FORM f_import_prog
       AND object_name = cs_object-object_name.
     APPEND wal_source-source_line TO tl_source.
     AT END OF include.
+      PERFORM f_apply_source_mappings CHANGING tl_source.
       IF wal_source-include = cs_object-object_name.
         PERFORM f_save_inactive_source USING vl_program vl_program_type tl_source
           CHANGING cs_object.
@@ -2340,6 +2716,12 @@ FORM f_import_ttyp
         CHANGING wal_dd40v-rowtype.
       PERFORM f_map_ddic_reference USING 'TABL' wal_dd40v-rowtype
         CHANGING wal_dd40v-rowtype.
+      LOOP AT tl_dd42v ASSIGNING FIELD-SYMBOL(<dd42>).
+        PERFORM f_set_structure_component USING 'TYPENAME' wal_dd40v-typename CHANGING <dd42>.
+      ENDLOOP.
+      LOOP AT tl_dd43v ASSIGNING FIELD-SYMBOL(<dd43>).
+        PERFORM f_set_structure_component USING 'TYPENAME' wal_dd40v-typename CHANGING <dd43>.
+      ENDLOOP.
 
       CALL FUNCTION 'DDIF_TTYP_PUT'
         EXPORTING
@@ -2410,6 +2792,9 @@ FORM f_import_fugr
         vl_is_tmg_group TYPE abap_bool,
         vl_incomplete_source TYPE abap_bool,
         vl_master_program TYPE progname,
+        vl_target_group TYPE tlibg-area,
+        vl_target_master TYPE progname,
+        vl_target_prefix TYPE progname,
         tl_tfdir       TYPE STANDARD TABLE OF tfdir,
         tl_tftit       TYPE STANDARD TABLE OF tftit,
         tl_enlfdir     TYPE STANDARD TABLE OF enlfdir,
@@ -2449,6 +2834,12 @@ FORM f_import_fugr
       "The Uxx number is assigned by Function Builder in insertion order.
       "Use the exported sequence so each source body stays with its module.
       SORT tl_tfdir BY include funcname.
+      vl_target_group = cs_object-target_object_name.
+      IF vl_target_group IS INITIAL.
+        vl_target_group = cs_object-object_name.
+      ENDIF.
+      vl_target_master = |SAPL{ vl_target_group }|.
+      vl_target_prefix = |L{ vl_target_group }|.
 
       "Table Maintenance Generator owns groups with TABLEFRAME_/TABLEPROC_
       "modules. Their generated metadata cannot be reconstructed safely as a
@@ -2478,7 +2869,7 @@ FORM f_import_fugr
         ENDIF.
         SELECT SINGLE pname FROM tfdir INTO @DATA(vl_existing_pool)
           WHERE funcname = @wal_namespace_function-funcname.
-        IF sy-subrc = 0 AND vl_existing_pool <> wal_namespace_function-pname.
+        IF sy-subrc = 0 AND vl_existing_pool <> vl_target_master.
           PERFORM f_set_object_error
             USING 'El modulo existente pertenece a otro grupo; no se sobrescribe.'
             CHANGING cs_object.
@@ -2496,10 +2887,10 @@ FORM f_import_fugr
       "Create the function pool before inserting its function modules. The
       "standard API owns TFDIR/ENLFDIR and the generated Uxx includes.
       IF cs_object-exists_dest IS INITIAL.
-        vl_pool_name  = cs_object-object_name.
+        vl_pool_name  = vl_target_group.
         vl_short_text = cs_object-short_text.
         IF vl_short_text IS INITIAL.
-          vl_short_text = |Grupo de funciones { cs_object-object_name }|.
+          vl_short_text = |Grupo de funciones { vl_target_group }|.
         ENDIF.
 
         CALL FUNCTION 'FUNCTION_POOL_CREATE'
@@ -2526,7 +2917,7 @@ FORM f_import_fugr
           INTO vl_tadir_function
           WHERE pgmid    EQ 'R3TR'
             AND object   EQ 'FUGR'
-            AND obj_name EQ cs_object-object_name.
+            AND obj_name EQ vl_target_group.
 
         IF sy-subrc NE 0.
           vl_srcsystem = sy-sysid.
@@ -2535,7 +2926,7 @@ FORM f_import_fugr
               wi_test_modus      = abap_false
               wi_tadir_pgmid     = 'R3TR'
               wi_tadir_object    = 'FUGR'
-              wi_tadir_obj_name  = cs_object-object_name
+              wi_tadir_obj_name  = vl_target_group
               wi_tadir_srcsystem = vl_srcsystem
               wi_tadir_author    = sy-uname
               wi_tadir_devclass  = vg_package
@@ -2608,11 +2999,11 @@ FORM f_import_fugr
         IF sy-subrc = 0.
           "Use the destination include, never the source system's Uxx number.
           IF wal_existing_function-include CP 'U*'.
-            vl_target_include = |{ vl_prefix }{ wal_existing_function-include }|.
+            vl_target_include = |{ vl_target_prefix }{ wal_existing_function-include }|.
           ELSEIF wal_existing_function-include CP 'L*'.
             vl_target_include = wal_existing_function-include.
           ELSE.
-            vl_target_include = |{ vl_prefix }U{ wal_existing_function-include }|.
+            vl_target_include = |{ vl_target_prefix }U{ wal_existing_function-include }|.
           ENDIF.
           vl_interface_warning = abap_true.
           vl_message = |{ wal_tfdir-funcname }: fuente actualizado; revisar interfaz existente en SE37.|.
@@ -2625,7 +3016,7 @@ FORM f_import_fugr
             CLEAR wal_tftit.
             READ TABLE tl_tftit INTO wal_tftit WITH KEY funcname = wal_tfdir-funcname.
           ENDIF.
-          vl_function_pool = cs_object-object_name.
+          vl_function_pool = vl_target_group.
           "Create metadata without compiling. Save the complete source below.
           CALL FUNCTION 'RS_FUNCTIONMODULE_INSERT'
             EXPORTING
@@ -2662,6 +3053,11 @@ FORM f_import_fugr
           ENDIF.
         ENDIF.
 
+        PERFORM f_apply_source_mappings CHANGING tl_report_source.
+        PERFORM f_apply_fugr_include_mappings
+          USING cs_object-object_name vl_prefix vl_target_prefix
+          CHANGING tl_report_source.
+
         PERFORM f_save_inactive_source USING vl_target_include 'I' tl_report_source
           CHANGING cs_object.
         IF cs_object-import_status = cg_status_err.
@@ -2682,7 +3078,13 @@ FORM f_import_fugr
         ENDIF.
         APPEND wal_aux_source-source_line TO tl_report_source.
         AT END OF include.
-          PERFORM f_save_inactive_source USING wal_aux_source-include 'I' tl_report_source
+          vl_target_include = wal_aux_source-include.
+          REPLACE FIRST OCCURRENCE OF vl_prefix IN vl_target_include WITH vl_target_prefix.
+          PERFORM f_apply_source_mappings CHANGING tl_report_source.
+          PERFORM f_apply_fugr_include_mappings
+            USING cs_object-object_name vl_prefix vl_target_prefix
+            CHANGING tl_report_source.
+          PERFORM f_save_inactive_source USING vl_target_include 'I' tl_report_source
             CHANGING cs_object.
           IF cs_object-import_status = cg_status_err.
             RETURN.
@@ -2704,7 +3106,11 @@ FORM f_import_fugr
           USING 'El XML no contiene el programa maestro SAPL del grupo.' CHANGING cs_object.
         RETURN.
       ENDIF.
-      PERFORM f_save_inactive_source USING vl_master_program 'F' tl_report_source
+      PERFORM f_apply_source_mappings CHANGING tl_report_source.
+      PERFORM f_apply_fugr_include_mappings
+        USING cs_object-object_name vl_prefix vl_target_prefix
+        CHANGING tl_report_source.
+      PERFORM f_save_inactive_source USING vl_target_master 'F' tl_report_source
         CHANGING cs_object.
       IF cs_object-import_status = cg_status_err.
         RETURN.
@@ -3171,13 +3577,13 @@ FORM f_activate_saved_sources.
       CONTINUE.
     ENDIF.
     IF <object>-object_type = 'CLAS' OR <object>-object_type = 'INTF'.
-      APPEND VALUE #( object = <object>-object_type obj_name = <object>-object_name ) TO tl_activation.
+      APPEND VALUE #( object = <object>-object_type obj_name = <object>-target_object_name ) TO tl_activation.
     ENDIF.
     IF wal_saved-program IS NOT INITIAL.
       APPEND VALUE #( object = 'REPS' obj_name = wal_saved-program ) TO tl_activation.
     ENDIF.
     IF <object>-object_type = 'FUGR'.
-      APPEND VALUE #( object = 'FUGR' obj_name = <object>-object_name ) TO tl_activation.
+      APPEND VALUE #( object = 'FUGR' obj_name = <object>-target_object_name ) TO tl_activation.
     ENDIF.
   ENDLOOP.
   LOOP AT tg_component_activation INTO DATA(wal_component_activation).
@@ -3374,6 +3780,11 @@ FORM f_import_oo
   ELSE.
     wal_oo-interface_properties-clsname = wal_key-clsname.
   ENDIF.
+  PERFORM f_apply_source_mappings CHANGING wal_oo-source.
+  PERFORM f_apply_source_mappings CHANGING wal_oo-locals_def.
+  PERFORM f_apply_source_mappings CHANGING wal_oo-locals_imp.
+  PERFORM f_apply_source_mappings CHANGING wal_oo-macros.
+  PERFORM f_apply_source_mappings CHANGING wal_oo-testclasses.
   TRY.
       IF cs_object-oo_prepared IS INITIAL.
         IF cs_object-object_type = 'CLAS'.
@@ -3496,9 +3907,9 @@ FORM f_read_prog_bundle
   CLEAR: cs_bundle, cv_error, cv_message.
   PERFORM f_get_payload USING is_object 'program_payload' CHANGING vl_payload.
   IF vl_payload IS INITIAL.
-    IF vg_input_version = '1.2'.
+    IF vg_input_version = '1.2' OR vg_input_version = '1.3'.
       cv_error = abap_true.
-      cv_message = 'El XML 1.2 requiere program_payload para cada PROG.'.
+      cv_message = |El XML { vg_input_version } requiere program_payload para cada PROG.|.
     ENDIF.
     RETURN. "Compatibility with source-only 1.1 exports.
   ENDIF.
@@ -3560,6 +3971,7 @@ FORM f_import_prog_bundle
         vl_main_language TYPE sylangu,
         vl_original_tcode TYPE sy-tcode,
         vl_subrc TYPE sy-subrc.
+  DATA vl_target_program TYPE progname.
   CLEAR cs_object-components_incomplete.
   IF is_bundle-format IS INITIAL.
     cs_object-components_incomplete = abap_true.
@@ -3567,8 +3979,12 @@ FORM f_import_prog_bundle
       'XML anterior: solo fuentes; vuelva a exportar para obtener componentes del programa.'.
     RETURN.
   ENDIF.
+  vl_target_program = cs_object-target_object_name.
+  IF vl_target_program IS INITIAL.
+    vl_target_program = is_bundle-program.
+  ENDIF.
   SELECT SINGLE masterlang FROM tadir INTO vl_main_language
-    WHERE pgmid = 'R3TR' AND object = 'PROG' AND obj_name = cs_object-object_name.
+    WHERE pgmid = 'R3TR' AND object = 'PROG' AND obj_name = vl_target_program.
   IF vl_main_language IS INITIAL.
     vl_main_language = cs_object-original_lang.
   ENDIF.
@@ -3585,15 +4001,18 @@ FORM f_import_prog_bundle
         ELSE.
           CASE wal_part-kind.
             WHEN 'TEXTPOOL' OR 'DOCU'.
+              vl_program = wal_part-name.
+              IF vl_program = is_bundle-program.
+                vl_program = vl_target_program.
+              ENDIF.
               "Only programs actually saved for this owner may receive texts.
               READ TABLE tg_saved_source TRANSPORTING NO FIELDS
                 WITH KEY object_type = 'PROG' object_name = cs_object-object_name
-                         program = wal_part-name.
+                         program = vl_program.
               IF sy-subrc <> 0 OR wal_part-language IS INITIAL.
                 vl_message = 'El texto no pertenece a un fuente guardado o falta idioma.'.
               ELSEIF wal_part-kind = 'TEXTPOOL'.
                 CALL TRANSFORMATION id SOURCE XML wal_part-content RESULT texts = tl_textpool.
-                vl_program = wal_part-name.
                 vl_state = 'I'.
                 IF wal_part-language <> vl_main_language.
                   vl_state = 'A'. "SAP stores translations independently of source activation.
@@ -3614,7 +4033,7 @@ FORM f_import_prog_bundle
                   "Derive the write key from validated identity, never from XML THEAD.
                   wal_doc-head-tdobject = 'DOKU'.
                   wal_doc-head-tdid = 'RE'.
-                  wal_doc-head-tdname = wal_part-name.
+                  wal_doc-head-tdname = vl_program.
                   wal_doc-head-tdspras = wal_part-language.
                   CALL FUNCTION 'DOCU_UPDATE'
                     EXPORTING head = wal_doc-head state = 'A' typ = wal_doc-info-typ
@@ -3634,10 +4053,11 @@ FORM f_import_prog_bundle
                 OR wal_screen-header-screen IS INITIAL.
                 vl_message = 'Identidad de dynpro incompatible.'.
               ELSE.
+                wal_screen-header-program = vl_target_program.
                 "Do not generate screens while dependent types may still be missing.
                 READ TABLE wal_screen-native_fields TRANSPORTING NO FIELDS WITH KEY fill = 'X'.
                 IF sy-subrc = 0 AND wal_screen-header-type CA 'IN'.
-                  wal_screen-native_header-prog = is_bundle-program.
+                  wal_screen-native_header-prog = vl_target_program.
                   wal_screen-native_header-dnum = wal_screen-header-screen.
                   wal_screen-native_header-dgen = sy-datum.
                   wal_screen-native_header-tgen = sy-uzeit.
@@ -3671,7 +4091,7 @@ FORM f_import_prog_bundle
                   vl_message = 'RPY_DYNPRO_INSERT fallo; dynpro pendiente.'.
                 ELSE.
                   LOOP AT wal_screen-texts ASSIGNING FIELD-SYMBOL(<screen_text>).
-                    <screen_text>-prog = is_bundle-program.
+                    <screen_text>-prog = vl_target_program.
                     <screen_text>-dynr = wal_screen-header-screen.
                   ENDLOOP.
                   IF wal_screen-texts IS NOT INITIAL.
@@ -3680,7 +4100,7 @@ FORM f_import_prog_bundle
                       vl_message = 'No se pudieron guardar las traducciones del dynpro.'.
                     ENDIF.
                   ENDIF.
-                  CONCATENATE wal_screen-header-program wal_screen-header-screen
+                  CONCATENATE vl_target_program wal_screen-header-screen
                     INTO vl_name RESPECTING BLANKS.
                   PERFORM f_queue_component USING cs_object-object_name 'DYNP' vl_name.
                 ENDIF.
@@ -3693,14 +4113,14 @@ FORM f_import_prog_bundle
                 CLEAR wal_tr_key.
                 wal_tr_key-devclass = vg_package.
                 wal_tr_key-obj_type = 'PROG'.
-                wal_tr_key-obj_name = cs_object-object_name.
+                wal_tr_key-obj_name = vl_target_program.
                 wal_tr_key-sub_type = 'CUAD'.
-                wal_tr_key-sub_name = is_bundle-program.
+                wal_tr_key-sub_name = vl_target_program.
                 vl_original_tcode = sy-tcode.
                 sy-tcode = 'SE41'.
                 TRY.
                     CALL FUNCTION 'RS_CUA_INTERNAL_WRITE'
-                      EXPORTING program = is_bundle-program language = wal_part-language
+                      EXPORTING program = vl_target_program language = wal_part-language
                                 tr_key = wal_tr_key adm = wal_cua-adm state = 'I'
                       TABLES sta = wal_cua-sta fun = wal_cua-fun men = wal_cua-men
                              mtx = wal_cua-mtx act = wal_cua-act but = wal_cua-but
@@ -3715,14 +4135,15 @@ FORM f_import_prog_bundle
                 IF vl_subrc <> 0.
                   vl_message = 'RS_CUA_INTERNAL_WRITE fallo.'.
                 ELSE.
-                  vl_name = is_bundle-program.
+                  vl_name = vl_target_program.
                   PERFORM f_queue_component USING cs_object-object_name 'CUAD' vl_name.
                 ENDIF.
               ENDIF.
             WHEN 'DYNTEXT'.
-              PERFORM f_import_dynpro_titles USING wal_part is_bundle CHANGING vl_message.
+              PERFORM f_import_dynpro_titles USING wal_part is_bundle vl_target_program
+                CHANGING vl_message.
             WHEN 'TRAN'.
-              PERFORM f_import_program_transaction USING wal_part is_bundle-program
+              PERFORM f_import_program_transaction USING wal_part is_bundle-program vl_target_program
                 CHANGING vl_message.
             WHEN 'ENHO'.
               PERFORM f_import_program_enhancement USING wal_part
@@ -3747,6 +4168,7 @@ ENDFORM.
 
 FORM f_import_dynpro_titles
   USING is_part TYPE ty_prog_component is_bundle TYPE ty_prog_bundle
+        iv_target_program TYPE progname
   CHANGING cv_message TYPE string.
   DATA: lr_titles TYPE REF TO data,
         vl_table TYPE tabname VALUE 'D020T',
@@ -3767,7 +4189,7 @@ FORM f_import_dynpro_titles
       cv_message = 'Clave de programa desconocida en D020T.'.
       RETURN.
     ENDIF.
-    <program> = is_bundle-program.
+    <program> = iv_target_program.
     ASSIGN COMPONENT 'DYNR' OF STRUCTURE <title> TO <number>.
     IF sy-subrc <> 0.
       ASSIGN COMPONENT 'DNUM' OF STRUCTURE <title> TO <number>.
@@ -3812,6 +4234,15 @@ FORM f_import_program_spot
     RETURN.
   ENDIF.
   CALL TRANSFORMATION id SOURCE XML is_part-content RESULT spot = wal_spot.
+  IF wal_spot-program = cs_object-object_name.
+    wal_spot-program = cs_object-target_object_name.
+  ENDIF.
+  IF wal_spot-obj_name = cs_object-object_name.
+    wal_spot-obj_name = cs_object-target_object_name.
+  ENDIF.
+  IF wal_spot-main_name = cs_object-object_name.
+    wal_spot-main_name = cs_object-target_object_name.
+  ENDIF.
   IF ( wal_spot-pgmid <> 'R3TR' AND wal_spot-pgmid <> 'LIMU' )
     OR ( wal_spot-main_type <> 'PROG' AND wal_spot-main_type <> 'REPS' )
     OR ( wal_spot-obj_type <> 'PROG' AND wal_spot-obj_type <> 'REPS' ).
@@ -3884,7 +4315,8 @@ FORM f_import_program_spot
 ENDFORM.
 
 FORM f_import_program_transaction
-  USING is_part TYPE ty_prog_component iv_program TYPE progname
+  USING is_part TYPE ty_prog_component iv_source_program TYPE progname
+        iv_program TYPE progname
   CHANGING cv_message TYPE string.
   DATA: wal_tran TYPE ty_prog_tran,
         wal_config TYPE ty_prog_tran_config,
@@ -3916,7 +4348,18 @@ FORM f_import_program_transaction
   IF cv_message IS NOT INITIAL.
     RETURN.
   ENDIF.
-  vl_target_ok = xsdbool( wal_config-called IS INITIAL AND wal_tran-definition-pgmna = iv_program ).
+  IF wal_config-kind = 'R' AND wal_config-variant IS NOT INITIAL.
+    SELECT SINGLE variant FROM varid INTO @DATA(vl_report_variant)
+      WHERE report = @iv_program AND variant = @wal_config-variant.
+    IF sy-subrc <> 0.
+      cv_message = |Falta la variante de reporte { wal_config-variant } para { iv_program }; debe crearse en destino.|.
+      RETURN.
+    ENDIF.
+  ELSEIF wal_config-kind = 'V'.
+    cv_message = |La variante de transaccion { wal_config-variant } es un prerequisito SHD0 externo; debe mantenerse manualmente en destino.|.
+    RETURN.
+  ENDIF.
+  vl_target_ok = xsdbool( wal_config-called IS INITIAL AND wal_tran-definition-pgmna = iv_source_program ).
   vl_target = wal_config-called.
   WHILE vl_target_ok = abap_false AND vl_target IS NOT INITIAL.
     INSERT vl_target INTO TABLE tl_visited.
@@ -3927,7 +4370,7 @@ FORM f_import_program_transaction
     IF sy-subrc <> 0.
       EXIT.
     ENDIF.
-    IF wal_target-pgmna = iv_program.
+    IF wal_target-pgmna = iv_program OR wal_target-pgmna = iv_source_program.
       vl_target_ok = abap_true.
       EXIT.
     ENDIF.
@@ -3943,6 +4386,9 @@ FORM f_import_program_transaction
   IF vl_target_ok = abap_false.
     cv_message = 'La transaccion llamada no existe o no conduce al programa importado.'.
     RETURN.
+  ENDIF.
+  IF wal_tran-definition-pgmna = iv_source_program.
+    wal_tran-definition-pgmna = iv_program.
   ENDIF.
   SELECT SINGLE * FROM tstc INTO @DATA(wal_existing) WHERE tcode = @wal_tran-definition-tcode.
   IF sy-subrc = 0.
@@ -4039,6 +4485,15 @@ FORM f_import_program_enhancement
     RETURN.
   ENDIF.
   CALL TRANSFORMATION id SOURCE XML is_part-content RESULT enhancement = wal_enho.
+  IF wal_enho-original-programname = cs_object-object_name.
+    wal_enho-original-programname = cs_object-target_object_name.
+  ENDIF.
+  IF wal_enho-original-org_obj_name = cs_object-object_name.
+    wal_enho-original-org_obj_name = cs_object-target_object_name.
+  ENDIF.
+  IF wal_enho-original-org_main_name = cs_object-object_name.
+    wal_enho-original-org_main_name = cs_object-target_object_name.
+  ENDIF.
   READ TABLE tg_saved_source TRANSPORTING NO FIELDS
     WITH KEY object_type = 'PROG' object_name = cs_object-object_name
              program = wal_enho-original-programname.

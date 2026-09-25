@@ -67,11 +67,13 @@ TYPES:
 
 TYPES:
   BEGIN OF ty_alv_object,
+    selected_for_export TYPE abap_bool,
     light       TYPE icon_d,
     package     TYPE devclass,
     original_system TYPE tadir-srcsystem,
     object_type TYPE string,
     object_name TYPE tadir-obj_name,
+    target_object_name TYPE tadir-obj_name,
     short_text  TYPE string,
     masterlang  TYPE tadir-masterlang,
     last_change TYPE sy-datum,
@@ -85,6 +87,14 @@ TYPES:
 
 TYPES:
   tyt_alv_object TYPE STANDARD TABLE OF ty_alv_object WITH EMPTY KEY.
+
+TYPES: BEGIN OF ty_dependency_ref,
+         parent_type TYPE string,
+         parent_name TYPE tadir-obj_name,
+         object_type TYPE string,
+         object_name TYPE tadir-obj_name,
+       END OF ty_dependency_ref.
+TYPES tyt_dependency_ref TYPE STANDARD TABLE OF ty_dependency_ref WITH EMPTY KEY.
 
 TYPES:
   BEGIN OF ty_include,
@@ -204,6 +214,7 @@ TYPES: BEGIN OF ty_oo_payload,
 *&---------------------------------------------------------------------*
 DATA:
   tg_alv_object TYPE tyt_alv_object,
+  tg_dependencies TYPE tyt_dependency_ref,
   tg_xml        TYPE ty_t_xml.
 
 DATA:
@@ -351,6 +362,7 @@ START-OF-SELECTION.
 
   CLEAR:
     tg_alv_object,
+    tg_dependencies,
     tg_xml.
 
   PERFORM f_build_export_scope
@@ -732,6 +744,7 @@ FORM f_select_objects.
     wal_alv-original_system = wal_tadir-srcsystem.
     wal_alv-object_type = vl_object_type.
     wal_alv-object_name = wal_tadir-obj_name.
+    wal_alv-target_object_name = wal_tadir-obj_name.
     wal_alv-short_text  = vl_short_text.
     wal_alv-masterlang  = wal_tadir-masterlang.
     wal_alv-last_change = vl_last_change.
@@ -1119,6 +1132,13 @@ FORM f_build_fieldcat
   APPEND wal_fieldcat TO ct_fieldcat.
 
   CLEAR wal_fieldcat.
+  wal_fieldcat-fieldname = 'TARGET_OBJECT_NAME'.
+  wal_fieldcat-coltext   = 'Nombre destino'.
+  wal_fieldcat-outputlen = 40.
+  wal_fieldcat-edit      = abap_true.
+  APPEND wal_fieldcat TO ct_fieldcat.
+
+  CLEAR wal_fieldcat.
   wal_fieldcat-fieldname = 'SHORT_TEXT'.
   wal_fieldcat-coltext   = 'Short Text'.
   wal_fieldcat-outputlen = 60.
@@ -1128,6 +1148,18 @@ FORM f_build_fieldcat
   wal_fieldcat-fieldname = 'SOURCE_TYPE'.
   wal_fieldcat-coltext   = 'Origen técnico'.
   wal_fieldcat-outputlen = 18.
+  APPEND wal_fieldcat TO ct_fieldcat.
+
+  CLEAR wal_fieldcat.
+  wal_fieldcat-fieldname = 'RELATIONSHIP'.
+  wal_fieldcat-coltext   = 'Relacion'.
+  wal_fieldcat-outputlen = 14.
+  APPEND wal_fieldcat TO ct_fieldcat.
+
+  CLEAR wal_fieldcat.
+  wal_fieldcat-fieldname = 'PARENT_NAME'.
+  wal_fieldcat-coltext   = 'Objeto padre'.
+  wal_fieldcat-outputlen = 40.
   APPEND wal_fieldcat TO ct_fieldcat.
 
   CLEAR wal_fieldcat.
@@ -1167,7 +1199,13 @@ FORM f_export_selected_objects.
     tl_xml,
     tl_rows.
 
+  LOOP AT tg_alv_object ASSIGNING FIELD-SYMBOL(<object_selection>).
+    CLEAR <object_selection>-selected_for_export.
+  ENDLOOP.
+
   IF go_grid IS BOUND.
+
+    go_grid->check_changed_data( ).
 
     go_grid->get_selected_rows(
       IMPORTING
@@ -1181,6 +1219,10 @@ FORM f_export_selected_objects.
 
     IF sy-subrc = 0.
       APPEND wal_object TO tl_selected.
+      READ TABLE tg_alv_object ASSIGNING FIELD-SYMBOL(<selected>) INDEX wal_row-index.
+      IF sy-subrc = 0.
+        <selected>-selected_for_export = abap_true.
+      ENDIF.
     ENDIF.
 
   ENDLOOP.
@@ -1463,6 +1505,8 @@ FORM f_export_object_to_xml
   APPEND |      <source_type>{ is_object-source_type }</source_type>| TO ct_xml.
   APPEND |      <source_object_type>{ is_object-object_type }</source_object_type>| TO ct_xml.
   APPEND |      <source_object_name>{ vl_name }</source_object_name>| TO ct_xml.
+  PERFORM f_escape_xml USING is_object-target_object_name CHANGING vl_text.
+  APPEND |      <target_object_name>{ vl_text }</target_object_name>| TO ct_xml.
   APPEND |      <relationship>{ is_object-relationship }</relationship>| TO ct_xml.
   PERFORM f_escape_xml USING is_object-parent_type CHANGING vl_text.
   APPEND |      <parent_type>{ vl_text }</parent_type>| TO ct_xml.
@@ -1470,6 +1514,16 @@ FORM f_export_object_to_xml
   APPEND |      <parent_name>{ vl_text }</parent_name>| TO ct_xml.
   PERFORM f_escape_xml USING is_object-relation_reason CHANGING vl_text.
   APPEND |      <relation_reason>{ vl_text }</relation_reason>| TO ct_xml.
+  APPEND '      <dependencies>' TO ct_xml.
+  LOOP AT tg_dependencies INTO DATA(wal_relation)
+    WHERE parent_type = is_object-object_type
+      AND parent_name = is_object-object_name.
+    READ TABLE tg_alv_object INTO DATA(wal_dependency)
+      WITH KEY object_type = wal_relation-object_type object_name = wal_relation-object_name.
+    PERFORM f_escape_xml USING wal_relation-object_name CHANGING vl_name.
+    APPEND |        <dependency type="{ wal_relation-object_type }" name="{ vl_name }" included="{ wal_dependency-selected_for_export }" source="{ wal_dependency-source_type }" />| TO ct_xml.
+  ENDLOOP.
+  APPEND '      </dependencies>' TO ct_xml.
 
   CASE is_object-object_type.
 
@@ -2862,15 +2916,32 @@ FORM f_expand_program_dependencies.
         wal_parent TYPE ty_alv_object,
         tl_names TYPE tyt_string,
         tl_tadir TYPE tyt_tadir,
+        tl_function_pools TYPE tyt_string,
+        tl_groups TYPE tyt_string,
+        tl_group_tadir TYPE tyt_tadir,
         wal_dependency TYPE ty_alv_object,
+        vl_scan_program TYPE progname,
+        vl_cycle TYPE abap_bool,
         vl_text TYPE string,
         vl_date TYPE sy-datum.
   WHILE vl_index <= lines( tg_alv_object ).
     READ TABLE tg_alv_object INTO wal_parent INDEX vl_index.
-    IF sy-subrc = 0 AND wal_parent-object_type = cg_type_prog.
-      CLEAR: tl_names, tl_tadir.
+    CLEAR vl_scan_program.
+    IF sy-subrc = 0.
+      CASE wal_parent-object_type.
+        WHEN cg_type_prog.
+          vl_scan_program = wal_parent-object_name.
+        WHEN cg_type_clas OR cg_type_intf.
+          PERFORM f_get_class_pool_include USING wal_parent-object_name
+            CHANGING vl_scan_program.
+        WHEN cg_type_fugr.
+          vl_scan_program = |SAPL{ wal_parent-object_name }|.
+      ENDCASE.
+    ENDIF.
+    IF vl_scan_program IS NOT INITIAL.
+      CLEAR: tl_names, tl_tadir, tl_function_pools, tl_groups, tl_group_tadir.
       PERFORM f_collect_program_dependency_names
-        USING wal_parent-object_name CHANGING tl_names.
+        USING vl_scan_program CHANGING tl_names.
       IF tl_names IS NOT INITIAL.
         SELECT * FROM tadir INTO TABLE @tl_tadir
           FOR ALL ENTRIES IN @tl_names
@@ -2879,12 +2950,50 @@ FORM f_expand_program_dependencies.
             AND srcsystem <> 'SAP'
             AND srcsystem <> @space
             AND genflag <> 'X'
-            AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP').
+            AND object IN ('PROG', 'TABL', 'DOMA', 'DTEL', 'SHLP', 'CLAS', 'INTF', 'FUGR', 'TTYP', 'MSAG', 'ENQU').
+        SELECT pname FROM tfdir INTO TABLE @tl_function_pools
+          FOR ALL ENTRIES IN @tl_names
+          WHERE funcname = @tl_names-table_line.
+        SORT tl_function_pools.
+        DELETE ADJACENT DUPLICATES FROM tl_function_pools.
+        LOOP AT tl_function_pools INTO DATA(vl_pool).
+          IF vl_pool CP 'SAPL*'.
+            APPEND substring( val = vl_pool off = 4 ) TO tl_groups.
+          ENDIF.
+        ENDLOOP.
+        IF tl_groups IS NOT INITIAL.
+          SELECT * FROM tadir INTO TABLE @tl_group_tadir
+            FOR ALL ENTRIES IN @tl_groups
+            WHERE pgmid = 'R3TR' AND object = 'FUGR'
+              AND obj_name = @tl_groups-table_line
+              AND srcsystem <> 'SAP' AND srcsystem <> @space.
+          APPEND LINES OF tl_group_tadir TO tl_tadir.
+        ENDIF.
       ENDIF.
       LOOP AT tl_tadir INTO DATA(wal_tadir).
+        READ TABLE tg_dependencies TRANSPORTING NO FIELDS
+          WITH KEY parent_type = wal_parent-object_type
+                   parent_name = wal_parent-object_name
+                   object_type = wal_tadir-object
+                   object_name = wal_tadir-obj_name.
+        IF sy-subrc <> 0.
+          APPEND VALUE #( parent_type = wal_parent-object_type
+                          parent_name = wal_parent-object_name
+                          object_type = wal_tadir-object
+                          object_name = wal_tadir-obj_name ) TO tg_dependencies.
+        ENDIF.
         READ TABLE tg_alv_object TRANSPORTING NO FIELDS
           WITH KEY object_type = wal_tadir-object object_name = wal_tadir-obj_name.
         IF sy-subrc = 0.
+          PERFORM f_dependency_creates_cycle
+            USING wal_parent-object_type wal_parent-object_name
+                  wal_tadir-object wal_tadir-obj_name
+            CHANGING vl_cycle.
+          IF vl_cycle = abap_true.
+            wal_parent-light = cg_status_warning.
+            wal_parent-status_text = |Ciclo detectado con { wal_tadir-object } { wal_tadir-obj_name }|.
+            MODIFY tg_alv_object FROM wal_parent INDEX vl_index.
+          ENDIF.
           CONTINUE.
         ENDIF.
         CLEAR: wal_dependency, vl_text, vl_date.
@@ -2895,6 +3004,7 @@ FORM f_expand_program_dependencies.
         wal_dependency-original_system = wal_tadir-srcsystem.
         wal_dependency-object_type = wal_tadir-object.
         wal_dependency-object_name = wal_tadir-obj_name.
+        wal_dependency-target_object_name = wal_tadir-obj_name.
         wal_dependency-short_text = vl_text.
         wal_dependency-masterlang = wal_tadir-masterlang.
         wal_dependency-last_change = vl_date.
@@ -2904,10 +3014,40 @@ FORM f_expand_program_dependencies.
         wal_dependency-parent_name = wal_parent-object_name.
         wal_dependency-relation_reason = 'STATIC_SOURCE_REFERENCE'.
         wal_dependency-status_text = 'Dependencia detectada; seleccione si desea incluirla'.
+        IF wal_tadir-object = 'MSAG' OR wal_tadir-object = 'ENQU'.
+          wal_dependency-source_type = 'EXTERNAL_PREREQUISITE'.
+          wal_dependency-status_text = 'Prerequisito externo no transportado por esta herramienta'.
+        ENDIF.
         APPEND wal_dependency TO tg_alv_object.
       ENDLOOP.
     ENDIF.
     vl_index = vl_index + 1.
+  ENDWHILE.
+ENDFORM.
+
+FORM f_dependency_creates_cycle
+  USING iv_parent_type TYPE string iv_parent_name TYPE tadir-obj_name
+        iv_child_type TYPE string iv_child_name TYPE tadir-obj_name
+  CHANGING cv_cycle TYPE abap_bool.
+  DATA: vl_type TYPE string,
+        vl_name TYPE tadir-obj_name,
+        vl_steps TYPE i.
+  CLEAR cv_cycle.
+  vl_type = iv_child_type.
+  vl_name = iv_child_name.
+  WHILE vl_name IS NOT INITIAL AND vl_steps <= lines( tg_alv_object ).
+    IF vl_type = iv_parent_type AND vl_name = iv_parent_name.
+      cv_cycle = abap_true.
+      RETURN.
+    ENDIF.
+    READ TABLE tg_alv_object INTO DATA(wal_node)
+      WITH KEY object_type = vl_type object_name = vl_name.
+    IF sy-subrc <> 0 OR wal_node-parent_name IS INITIAL.
+      RETURN.
+    ENDIF.
+    vl_type = wal_node-parent_type.
+    vl_name = wal_node-parent_name.
+    vl_steps = vl_steps + 1.
   ENDWHILE.
 ENDFORM.
 
@@ -2939,6 +3079,9 @@ FORM f_collect_program_dependency_names
       vl_token = substring( val = vl_upper off = wal_match-offset len = wal_match-length ).
       IF vl_token <> iv_program.
         APPEND vl_token TO ct_names.
+        IF vl_token CP 'ENQUEUE_*' OR vl_token CP 'DEQUEUE_*'.
+          APPEND substring( val = vl_token off = 8 ) TO ct_names.
+        ENDIF.
       ENDIF.
     ENDLOOP.
   ENDLOOP.
